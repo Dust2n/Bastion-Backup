@@ -1,0 +1,15 @@
+# build output
+/dist/
+*.exe
+*.test
+
+# rescue build results and server data (never commit keys, databases or backups)
+*.iso
+*.wim
+*.bsb
+*.db
+*.db-wal
+*.db-shm
+*.key
+*.pem
+initial-admin-password.txt

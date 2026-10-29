@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bastion Backup</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 2 4 7v8c0 7.5 5.1 13.4 12 15 6.9-1.6 12-7.5 12-15V7z' fill='%234f6bed'/%3E%3Cpath d='m11 16 4 4 7-8' stroke='white' stroke-width='3' fill='none'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+<div id="login" class="login hidden">
+  <form id="login-form" class="login-card">
+    <div class="login-logo"><span class="logo"></span></div>
+    <h1>Bastion Backup</h1>
+    <p class="muted">Bitte anmelden</p>
+    <label class="field"><span>Benutzer</span><input name="name" autocomplete="username" required></label>
+    <label class="field"><span>Passwort</span><input name="password" type="password" autocomplete="current-password" required></label>
+    <div id="login-error" class="error"></div>
+    <button class="btn primary block">Anmelden</button>
+  </form>
+</div>
+<div id="app" class="hidden">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand"><span class="logo"></span><span>Bastion</span></div>
+    <nav id="nav"></nav>
+    <div class="sidebar-foot">
+      <div class="live-ind" title="Live-Verbindung zum Server"><i></i><span>Live</span></div>
+      <div id="me" class="me"></div>
+    </div>
+  </aside>
+  <div class="main-wrap">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="menu-btn" title="Menü">☰</button>
+      <div class="crumb" id="crumb"></div>
+      <div class="top-actions">
+        <button class="icon-btn" id="theme-btn" title="Hell/Dunkel"></button>
+        <button class="icon-btn" id="logout" title="Abmelden"></button>
+      </div>
+    </header>
+    <main id="main"></main>
+  </div>
+</div>
+<div id="modal" class="modal"><div class="modal-box" id="modal-box"></div></div>
+<div id="toast" class="toast"></div>
+</body>
+</html>
