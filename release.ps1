@@ -50,7 +50,8 @@ foreach ($t in "windows-amd64", "linux-amd64", "linux-arm64") {
 $sums = Get-ChildItem $out -File | Sort-Object Name | ForEach-Object {
     "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
 }
-[IO.File]::WriteAllLines((Join-Path (Resolve-Path $out) "SHA256SUMS.txt"), [string[]]$sums)
+# LF line endings, so "sha256sum -c SHA256SUMS.txt" works on Linux
+[IO.File]::WriteAllText((Join-Path (Resolve-Path $out) "SHA256SUMS.txt"), (($sums -join "`n") + "`n"))
 
 Get-ChildItem $out | Format-Table Name, @{ n = 'MB'; e = { [math]::Round($_.Length / 1MB, 1) } }
 Write-Host "fertig: .\$out"
