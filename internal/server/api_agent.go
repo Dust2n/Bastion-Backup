@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -57,31 +58,28 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if uses > 0 {
-		s.db.Exec(`UPDATE tokens SET uses=uses-1 WHERE hash=?`, th)
-	}
-
-	// A reinstalled machine (same name and MAC) keeps its ID and history.
-	id := ""
-	rows, _ := s.db.Query(`SELECT id,macs FROM agents WHERE lower(hostname)=lower(?)`, req.Hostname)
-	for rows.Next() {
-		var aid, macs string
-		rows.Scan(&aid, &macs)
-		for _, m := range req.MACs {
-			if m != "" && strings.Contains(strings.ToLower(macs), strings.ToLower(m)) {
-				id = aid
-			}
+		// atomic, so parallel enrollments can not exceed the limit
+		res, err := s.db.Exec(`UPDATE tokens SET uses=uses-1 WHERE hash=? AND uses>0`, th)
+		if err != nil {
+			httpErr(w, 500, "%v", err)
+			return
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			httpErr(w, 403, "Anmelde-Token ungültig oder abgelaufen")
+			return
 		}
 	}
-	rows.Close()
+
+	// Every enrollment gets a new identity. Hostname and MAC address are
+	// no proof of identity (anyone with an install token could claim
+	// them), so a reinstalled machine does not take over the old one's
+	// backups by itself: it is only marked as a probable successor, and
+	// an administrator moves the history over (handleAgentMerge).
+	replaces := s.previousAgent(req.Hostname, req.MACs)
+	id := hex.EncodeToString(random(8))
 	secret := randToken(32)
-	if id == "" {
-		id = hex.EncodeToString(random(8))
-		_, err = s.db.Exec(`INSERT INTO agents(id,hostname,os,arch,version,ips,macs,secret_hash,grp,enrolled,last_seen) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-			id, req.Hostname, req.OS, req.Arch, req.Version, jsonStr(req.IPs), jsonStr(req.MACs), sha(secret), grp, now(), now())
-	} else {
-		_, err = s.db.Exec(`UPDATE agents SET secret_hash=?,os=?,arch=?,version=?,ips=?,macs=?,last_seen=?,removed=0 WHERE id=?`,
-			sha(secret), req.OS, req.Arch, req.Version, jsonStr(req.IPs), jsonStr(req.MACs), now(), id)
-	}
+	_, err = s.db.Exec(`INSERT INTO agents(id,hostname,os,arch,version,ips,macs,secret_hash,grp,enrolled,last_seen,replaces) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		id, req.Hostname, req.OS, req.Arch, req.Version, jsonStr(req.IPs), jsonStr(req.MACs), sha(secret), grp, now(), now(), replaces)
 	if err != nil {
 		httpErr(w, 500, "%v", err)
 		return
@@ -90,9 +88,41 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		s.db.Exec(`INSERT OR IGNORE INTO plan_targets(plan_id,target) VALUES(?,?)`, planID, "agent:"+id)
 	}
 	s.db.Exec(`UPDATE rollouts SET status='done',message='Agent angemeldet',agent_id=?,updated=? WHERE token_hash=?`, id, now(), th)
-	s.audit("-", "enroll", fmt.Sprintf("%s (%s) als %s", req.Hostname, clientIP(r), id))
+	detail := fmt.Sprintf("%s (%s) als %s", req.Hostname, clientIP(r), id)
+	if replaces != "" {
+		detail += " – vermutlich Neuinstallation von " + replaces + ", Übernahme durch Administrator nötig"
+	}
+	s.audit("-", "enroll", detail)
 	writeJSON(w, proto.EnrollResponse{AgentID: id, Secret: secret,
 		SigningKey: base64.StdEncoding.EncodeToString(s.signKey.Public().(ed25519.PublicKey))})
+}
+
+// previousAgent finds an earlier agent with the same hostname and an
+// identical MAC address.
+func (s *Server) previousAgent(hostname string, macs []string) string {
+	want := map[string]bool{}
+	for _, m := range macs {
+		if hw, err := net.ParseMAC(m); err == nil {
+			want[hw.String()] = true
+		}
+	}
+	rows, err := s.db.Query(`SELECT id,macs FROM agents WHERE lower(hostname)=lower(?) ORDER BY enrolled DESC`, hostname)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var aid, js string
+		rows.Scan(&aid, &js)
+		var have []string
+		json.Unmarshal([]byte(js), &have)
+		for _, m := range have {
+			if hw, err := net.ParseMAC(m); err == nil && want[hw.String()] {
+				return aid
+			}
+		}
+	}
+	return ""
 }
 
 // handleGoodbye is called by an agent that is being uninstalled. The agent
@@ -238,8 +268,17 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, p *princip
 	if st != "success" {
 		pct = 0
 	}
+	var snapID string
+	s.db.QueryRow(`SELECT snapshot_id FROM jobs WHERE id=?`, id).Scan(&snapID)
+	if typ == proto.JobBackup {
+		snapID = ""
+		s.db.QueryRow(`SELECT id FROM snapshots WHERE job_id=?`, id).Scan(&snapID)
+		if st == "success" && snapID == "" {
+			st, res.Message, pct = "failed", "Backup meldet Erfolg, aber es wurde kein Backup gespeichert", 0
+		}
+	}
 	s.db.Exec(`UPDATE jobs SET status=?,message=?,snapshot_id=?,finished=?,percent=CASE WHEN ?>0 THEN ? ELSE percent END WHERE id=?`,
-		st, res.Message, res.SnapshotID, fin, pct, pct, id)
+		st, res.Message, snapID, fin, pct, pct, id)
 	s.appendLog(id, res.Log)
 	if st != "waiting" && typ == proto.JobRestoreImage {
 		s.db.Exec(`DELETE FROM restore_tokens WHERE job_id=?`, id)
@@ -351,6 +390,33 @@ func (s *Server) handlePostSnapshot(w http.ResponseWriter, r *http.Request, p *p
 		return
 	}
 	snap.AgentID = p.AgentID
+	// A snapshot is only accepted for the backup job the server handed
+	// out, and plan, kind and time come from that job: a compromised
+	// machine must not be able to push its real backups out of the
+	// retention window with forged ones.
+	var jobID, jobPlan, started int64
+	var params string
+	err := s.db.QueryRow(`SELECT id,plan_id,started,params FROM jobs WHERE agent_id=? AND type='backup' AND status='running' ORDER BY id DESC LIMIT 1`,
+		p.AgentID).Scan(&jobID, &jobPlan, &started, &params)
+	if err != nil {
+		httpErr(w, 409, "kein laufender Backup-Auftrag für diesen Rechner")
+		return
+	}
+	var dup int
+	s.db.QueryRow(`SELECT COUNT(*) FROM snapshots WHERE job_id=?`, jobID).Scan(&dup)
+	if dup > 0 {
+		httpErr(w, 409, "für diesen Auftrag wurde bereits ein Backup gespeichert")
+		return
+	}
+	var bp proto.BackupParams
+	json.Unmarshal([]byte(params), &bp)
+	snap.PlanID, snap.Kind = jobPlan, bp.Kind
+	if snap.Kind == "" {
+		snap.Kind = "image"
+	}
+	if started > 0 {
+		snap.Time = time.Unix(started, 0).UTC()
+	}
 	st, storageID, err := s.storeFor(p)
 	if err != nil {
 		httpErr(w, 503, "Speicherort nicht verfügbar: %v", err)
@@ -369,8 +435,8 @@ func (s *Server) handlePostSnapshot(w http.ResponseWriter, r *http.Request, p *p
 		newBytes += v.NewBytes
 	}
 	data := jsonStr(snap)
-	if _, err := s.db.Exec(`INSERT INTO snapshots(id,agent_id,plan_id,time,kind,files,bytes,new_bytes,data,storage_id) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		snap.ID, snap.AgentID, snap.PlanID, snap.Time.Unix(), snap.Kind, files, bytes, newBytes, data, storageID); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO snapshots(id,agent_id,plan_id,time,kind,files,bytes,new_bytes,data,storage_id,job_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		snap.ID, snap.AgentID, snap.PlanID, snap.Time.Unix(), snap.Kind, files, bytes, newBytes, data, storageID, jobID); err != nil {
 		httpErr(w, 500, "%v", err)
 		return
 	}
@@ -379,6 +445,9 @@ func (s *Server) handlePostSnapshot(w http.ResponseWriter, r *http.Request, p *p
 	os.MkdirAll(filepath.Join(st.Dir(), "snapshots"), 0o700)
 	os.WriteFile(filepath.Join(st.Dir(), "snapshots", snap.ID+".json"), []byte(data), 0o600)
 	go s.buildIndex(snap.ID)
+	if q := int64(s.settingInt("quarantine_at", 0)); q > 0 && q >= started {
+		go s.checkComplete(snap.ID, st, &snap)
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

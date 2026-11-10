@@ -64,9 +64,14 @@ func (s *Store) path(id ID) string {
 	return filepath.Join(s.dir, "chunks", h[:2], h[2:4], h)
 }
 
+// minChunkFile is the size of an encrypted empty chunk; anything shorter
+// is a torn write (e.g. after a power failure) and counts as missing, so
+// the next backup uploads the chunk again.
+var minChunkFile = int64(len(magic) + 12 + 16)
+
 func (s *Store) Has(id ID) bool {
-	_, err := os.Stat(s.path(id))
-	return err == nil
+	fi, err := os.Stat(s.path(id))
+	return err == nil && fi.Size() >= minChunkFile
 }
 
 // Put stores plaintext data and returns its ID.
@@ -104,17 +109,40 @@ func (s *Store) write(id ID, z []byte) error {
 	out = append(out, nonce...)
 	out = s.aead.Seal(out, nonce, z, id[:])
 
-	p := s.path(id)
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+	return writeDurable(s.path(id), out)
+}
+
+// writeDurable writes a file so that after a crash it is either complete
+// under its final name or absent: data is flushed to disk before the
+// rename, and the rename itself is flushed where the OS allows it.
+func writeDurable(p string, data []byte) error {
+	dir := filepath.Dir(p)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	tmp := fmt.Sprintf("%s.tmp%d", p, time.Now().UnixNano())
-	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, p); err != nil {
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, p)
+	}
+	if err != nil {
 		os.Remove(tmp)
 		return err
+	}
+	// directory entry (Linux); Windows can not open directories this way
+	if d, err := os.Open(dir); err == nil {
+		d.Sync()
+		d.Close()
 	}
 	return nil
 }
@@ -161,6 +189,18 @@ func (s *Store) Verify(id ID) error {
 
 func (s *Store) Delete(id ID) error { return os.Remove(s.path(id)) }
 
+// Quarantine moves a damaged chunk out of the store (into quarantine/), so
+// Has reports it as missing and the next full read of the machine uploads
+// it again. The file is kept for analysis.
+func (s *Store) Quarantine(id ID) error {
+	dir := filepath.Join(s.dir, "quarantine")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	dst := filepath.Join(dir, fmt.Sprintf("%s.%d", id, time.Now().Unix()))
+	return os.Rename(s.path(id), dst)
+}
+
 // Dir is the directory of the store.
 func (s *Store) Dir() string { return s.dir }
 
@@ -177,16 +217,7 @@ func (s *Store) CopyTo(dst *Store, id ID) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	p := dst.path(id)
-	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
-		return 0, err
-	}
-	tmp := fmt.Sprintf("%s.tmp%d", p, time.Now().UnixNano())
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return 0, err
-	}
-	if err := os.Rename(tmp, p); err != nil {
-		os.Remove(tmp)
+	if err := writeDurable(dst.path(id), b); err != nil {
 		return 0, err
 	}
 	return int64(len(b)), nil

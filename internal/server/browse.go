@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -420,6 +421,9 @@ func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request, u *u
 		rel := strings.TrimPrefix(strings.TrimPrefix(c.Path, p), "/")
 		if p != "" {
 			rel = path.Join(name, rel)
+		}
+		if !filepath.IsLocal(filepath.FromSlash(rel)) {
+			continue // would unpack outside the target folder
 		}
 		fw, err := zw.CreateHeader(&zip.FileHeader{Name: rel, Method: zip.Deflate, Modified: time.Unix(0, c.Mtime)})
 		if err != nil {

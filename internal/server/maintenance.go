@@ -263,15 +263,18 @@ func (s *Server) gcStorage(sid int64) (*storageStats, error) {
 		name = row.Name
 	}
 	live := map[repo.ID]struct{}{}
-	rows, err := s.db.Query(`SELECT id,data FROM snapshots WHERE deleted=0 AND storage_id=?`, sid)
+	rows, err := s.db.Query(`SELECT id,data,damaged FROM snapshots WHERE deleted=0 AND storage_id=?`, sid)
 	if err != nil {
 		return nil, err
 	}
-	type sd struct{ id, data string }
+	type sd struct {
+		id, data string
+		damaged  bool
+	}
 	var snaps []sd
 	for rows.Next() {
 		var x sd
-		rows.Scan(&x.id, &x.data)
+		rows.Scan(&x.id, &x.data, &x.damaged)
 		snaps = append(snaps, x)
 	}
 	rows.Close()
@@ -281,6 +284,10 @@ func (s *Server) gcStorage(sid int64) (*storageStats, error) {
 			return nil, fmt.Errorf("%s: Backup %s nicht lesbar, Bereinigung abgebrochen", name, x.id)
 		}
 		if err := snap.Refs(store.Get, func(id repo.ID) { live[id] = struct{}{} }); err != nil {
+			if x.damaged {
+				// known damaged (integrity check): keep what is reachable
+				continue
+			}
 			return nil, fmt.Errorf("%s: Backup %s unvollständig (%v), nichts gelöscht", name, x.id, err)
 		}
 	}
@@ -339,7 +346,7 @@ func (s *Server) runScrub(by string) {
 		return
 	}
 	defer scrubMu.Unlock()
-	var ok, bad int64
+	var ok, bad, damagedSnaps int64
 	var bads []string
 	for _, sid := range s.storageIDs() {
 		store, err := s.storeByID(sid)
@@ -347,9 +354,11 @@ func (s *Server) runScrub(by string) {
 			bads = append(bads, err.Error())
 			continue
 		}
+		broken := map[repo.ID]bool{}
 		store.Walk(func(c repo.ChunkInfo) error {
 			if err := store.Verify(c.ID); err != nil {
 				bad++
+				broken[c.ID] = true
 				if len(bads) < 50 {
 					bads = append(bads, err.Error())
 				}
@@ -358,13 +367,89 @@ func (s *Server) runScrub(by string) {
 			}
 			return nil
 		})
+		if len(broken) > 0 {
+			// after the walk: moving files while walking could skip entries
+			for id := range broken {
+				if err := store.Quarantine(id); err != nil {
+					s.log.Printf("Quarantäne %s: %v", id, err)
+				}
+			}
+			damagedSnaps += s.markDamaged(sid, store, broken)
+			// backups still running may reference the quarantined chunks
+			// through their unchanged files; they are checked on arrival
+			s.setSetting("quarantine_at", fmt.Sprint(now()))
+		}
 	}
 	msg := fmt.Sprintf("%d Chunks geprüft, %d fehlerhaft", ok+bad, bad)
+	if bad > 0 {
+		msg += fmt.Sprintf(" (in Quarantäne verschoben, %d Backups betroffen; die nächsten Backups der betroffenen Rechner lesen wieder alle Dateien und laden die Daten neu hoch)", damagedSnaps)
+	}
 	s.setSetting("scrub_result", jsonStr(map[string]any{"time": now(), "ok": ok, "bad": bad, "errors": bads, "message": msg}))
 	s.audit(by, "scrub", msg)
 	if bad > 0 {
 		s.sendMail("[Bastion] Integritätsprüfung: fehlerhafte Daten", msg+"\n\n"+strings.Join(bads, "\n"))
 	}
+}
+
+// markDamaged flags the snapshots of a storage that reference one of the
+// broken chunks (or whose tree can no longer be read). Damaged snapshots
+// are not used as the base for incremental backups, so the next backup
+// reads every file again and replaces the missing chunks.
+func (s *Server) markDamaged(sid int64, store *repo.Store, broken map[repo.ID]bool) int64 {
+	rows, err := s.db.Query(`SELECT id,data FROM snapshots WHERE deleted=0 AND storage_id=?`, sid)
+	if err != nil {
+		return 0
+	}
+	type sd struct{ id, data string }
+	var snaps []sd
+	for rows.Next() {
+		var x sd
+		rows.Scan(&x.id, &x.data)
+		snaps = append(snaps, x)
+	}
+	rows.Close()
+	var n int64
+	for _, x := range snaps {
+		var snap repo.Snapshot
+		hit := 0
+		if err := json.Unmarshal([]byte(x.data), &snap); err != nil {
+			continue
+		}
+		if err := snap.Refs(store.Get, func(id repo.ID) {
+			if broken[id] {
+				hit++
+			}
+		}); err != nil && hit == 0 {
+			hit = 1 // tree not readable
+		}
+		if hit == 0 {
+			continue
+		}
+		n++
+		msg := fmt.Sprintf("Integritätsprüfung: %d beschädigte Datenblöcke, Backup nur teilweise wiederherstellbar", hit)
+		s.db.Exec(`UPDATE snapshots SET damaged=1,verified=?,verify_ok=0,verify_msg=? WHERE id=?`, now(), msg, x.id)
+	}
+	return n
+}
+
+// checkComplete marks a new snapshot as damaged if it references chunks
+// that are no longer in the store (quarantined while it was running).
+func (s *Server) checkComplete(snapID string, store *repo.Store, snap *repo.Snapshot) {
+	missing := 0
+	err := snap.Refs(store.Get, func(id repo.ID) {
+		if !store.Has(id) {
+			missing++
+		}
+	})
+	if err == nil && missing == 0 {
+		return
+	}
+	if missing == 0 {
+		missing = 1
+	}
+	msg := fmt.Sprintf("Integritätsprüfung: %d Datenblöcke fehlen, Backup nur teilweise wiederherstellbar", missing)
+	s.db.Exec(`UPDATE snapshots SET damaged=1,verified=?,verify_ok=0,verify_msg=? WHERE id=?`, now(), msg, snapID)
+	s.log.Printf("Backup %s: %s", snapID, msg)
 }
 
 // agentBinary is a published agent version for updates and rollout.

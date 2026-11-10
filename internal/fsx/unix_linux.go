@@ -164,11 +164,20 @@ type Writer struct {
 	DelayLocked   bool   // unused on Linux: files are replaced atomically
 	PendingReboot bool
 	dirs          []*repo.Node
+	guard         pathGuard
 }
 
 func NewWriter(root string) *Writer { return &Writer{Root: root} }
 
 func (w *Writer) Write(n *repo.Node, content io.Reader) error {
+	if err := w.guard.check(n.Path); err != nil {
+		return err
+	}
+	if n.Type == repo.TypeHardlink {
+		if err := w.guard.check(n.Link); err != nil {
+			return err
+		}
+	}
 	p := filepath.Join(w.Root, filepath.FromSlash(n.Path))
 	switch n.Type {
 	case repo.TypeDir:
@@ -215,6 +224,7 @@ func (w *Writer) Write(n *repo.Node, content io.Reader) error {
 	case repo.TypeSymlink:
 		os.Remove(p)
 		os.MkdirAll(filepath.Dir(p), 0o755)
+		w.guard.addLink(n.Path)
 		if err := os.Symlink(n.Link, p); err != nil {
 			return err
 		}

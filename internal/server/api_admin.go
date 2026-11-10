@@ -40,6 +40,7 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/agents/{id}/backup", s.admin("operator", s.handleAgentBackup))
 	mux.HandleFunc("POST /api/agents/{id}/update", s.admin("admin", s.handleAgentUpdate))
 	mux.HandleFunc("POST /api/agents/{id}/uninstall", s.admin("admin", s.handleAgentUninstall))
+	mux.HandleFunc("POST /api/agents/{id}/merge", s.admin("admin", s.handleAgentMerge))
 
 	mux.HandleFunc("GET /api/plans", s.admin("viewer", s.handlePlans))
 	mux.HandleFunc("POST /api/plans", s.admin("admin", s.handlePlanSave))
@@ -242,10 +243,10 @@ func (s *Server) planNamesByAgent() map[string][]string {
 func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request, u *user) {
 	id := r.PathValue("id")
 	var a agentRow
-	var ips, macs, lay string
+	var ips, macs, lay, replaces string
 	var enrolled int64
-	err := s.db.QueryRow(`SELECT id,hostname,os,os_version,arch,version,ips,macs,grp,last_seen,layout,enrolled,removed FROM agents WHERE id=?`, id).
-		Scan(&a.ID, &a.Hostname, &a.OS, &a.OSVersion, &a.Arch, &a.Version, &ips, &macs, &a.Group, &a.LastSeen, &lay, &enrolled, &a.Removed)
+	err := s.db.QueryRow(`SELECT id,hostname,os,os_version,arch,version,ips,macs,grp,last_seen,layout,enrolled,removed,replaces FROM agents WHERE id=?`, id).
+		Scan(&a.ID, &a.Hostname, &a.OS, &a.OSVersion, &a.Arch, &a.Version, &ips, &macs, &a.Group, &a.LastSeen, &lay, &enrolled, &a.Removed, &replaces)
 	if err != nil {
 		httpErr(w, 404, "Agent nicht gefunden")
 		return
@@ -256,8 +257,17 @@ func (s *Server) handleAgent(w http.ResponseWriter, r *http.Request, u *user) {
 	json.Unmarshal([]byte(lay), &m)
 	var macList []string
 	json.Unmarshal([]byte(macs), &macList)
+	var prev map[string]any
+	if replaces != "" {
+		var host string
+		var seen, snaps int64
+		if s.db.QueryRow(`SELECT hostname,last_seen,(SELECT COUNT(*) FROM snapshots WHERE agent_id=agents.id AND deleted=0) FROM agents WHERE id=?`, replaces).
+			Scan(&host, &seen, &snaps) == nil {
+			prev = map[string]any{"id": replaces, "hostname": host, "last_seen": seen, "snapshots": snaps}
+		}
+	}
 	writeJSON(w, map[string]any{
-		"agent": a, "macs": macList, "layout": m, "enrolled": enrolled,
+		"agent": a, "macs": macList, "layout": m, "enrolled": enrolled, "replaces": prev,
 		"snapshots": s.querySnapshots(`WHERE agent_id=? AND deleted=0`, []any{id}),
 		"jobs":      s.queryJobs(`WHERE j.agent_id=?`, []any{id}, 30),
 		"plans":     s.planNamesByAgent()[id],
@@ -288,6 +298,56 @@ func (s *Server) handleAgentDelete(w http.ResponseWriter, r *http.Request, u *us
 		s.db.Exec(`UPDATE snapshots SET deleted=1 WHERE agent_id=?`, id)
 	}
 	s.audit(u.Name, "agent_delete", id)
+	writeJSON(w, map[string]string{"ok": "1"})
+}
+
+// handleAgentMerge moves the history of the agent a reinstalled machine
+// replaces (backups, jobs, plan memberships, group) to the new agent and
+// removes the old entry. Only an administrator can confirm this.
+func (s *Server) handleAgentMerge(w http.ResponseWriter, r *http.Request, u *user) {
+	id := r.PathValue("id")
+	var old, grp string
+	if err := s.db.QueryRow(`SELECT replaces FROM agents WHERE id=?`, id).Scan(&old); err != nil || old == "" {
+		httpErr(w, 404, "kein Vorgänger zum Übernehmen")
+		return
+	}
+	var running int
+	s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE agent_id IN (?,?) AND status IN ('running','waiting')`, id, old).Scan(&running)
+	if running > 0 {
+		httpErr(w, 409, "Erst nach Ende der laufenden Aufträge möglich")
+		return
+	}
+	s.db.QueryRow(`SELECT grp FROM agents WHERE id=?`, old).Scan(&grp)
+	tx, err := s.db.Begin()
+	if err != nil {
+		httpErr(w, 500, "%v", err)
+		return
+	}
+	defer tx.Rollback()
+	steps := []struct {
+		q    string
+		args []any
+	}{
+		{`UPDATE snapshots SET agent_id=? WHERE agent_id=?`, []any{id, old}},
+		{`UPDATE jobs SET agent_id=? WHERE agent_id=?`, []any{id, old}},
+		{`UPDATE restore_tokens SET agent_id=? WHERE agent_id=?`, []any{id, old}},
+		{`INSERT OR IGNORE INTO plan_targets(plan_id,target) SELECT plan_id,? FROM plan_targets WHERE target=?`, []any{"agent:" + id, "agent:" + old}},
+		{`DELETE FROM plan_targets WHERE target=?`, []any{"agent:" + old}},
+		{`UPDATE agents SET grp=CASE WHEN grp='' THEN ? ELSE grp END, replaces='' WHERE id=?`, []any{grp, id}},
+		{`UPDATE agents SET replaces=? WHERE replaces=?`, []any{id, old}},
+		{`DELETE FROM agents WHERE id=?`, []any{old}},
+	}
+	for _, st := range steps {
+		if _, err := tx.Exec(st.q, st.args...); err != nil {
+			httpErr(w, 500, "%v", err)
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		httpErr(w, 500, "%v", err)
+		return
+	}
+	s.audit(u.Name, "agent_merge", old+" → "+id)
 	writeJSON(w, map[string]string{"ok": "1"})
 }
 

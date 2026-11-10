@@ -324,6 +324,7 @@ type Writer struct {
 	DelayLocked   bool   // replace files in use at the next reboot
 	PendingReboot bool
 	dirs          []*repo.Node
+	guard         pathGuard
 }
 
 func NewWriter(root string) *Writer {
@@ -337,6 +338,19 @@ func (w *Writer) abs(rel string) string {
 
 // Write restores one node. content is the stored stream (nil for none).
 func (w *Writer) Write(n *repo.Node, content io.Reader) error {
+	if err := w.guard.check(n.Path); err != nil {
+		return err
+	}
+	if n.Type == repo.TypeHardlink {
+		if err := w.guard.check(n.Link); err != nil {
+			return err
+		}
+	}
+	if n.Mode&attrReparse != 0 && n.Path != "" {
+		// junctions and symlinks come back through the stream; nothing
+		// may be written below them
+		w.guard.addLink(n.Path)
+	}
 	p := w.abs(n.Path)
 	switch n.Type {
 	case repo.TypeDir:

@@ -221,7 +221,8 @@ func (s *Server) backupParams(planID int64, stored, agentID string) (*proto.Back
 		bp.BandwidthKBps = s.settingInt("bandwidth_kbps", 0)
 	}
 	// the previous backup only helps if its chunks are in the same storage
-	s.db.QueryRow(`SELECT id FROM snapshots WHERE agent_id=? AND plan_id=? AND kind=? AND deleted=0 AND storage_id=? ORDER BY time DESC LIMIT 1`,
+	// and only if none of them is damaged (integrity check)
+	s.db.QueryRow(`SELECT id FROM snapshots WHERE agent_id=? AND plan_id=? AND kind=? AND deleted=0 AND damaged=0 AND storage_id=? ORDER BY time DESC LIMIT 1`,
 		agentID, bp.PlanID, bp.Kind, s.planStorage(planID)).Scan(&bp.Parent)
 	return &bp, nil
 }
