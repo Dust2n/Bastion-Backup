@@ -221,10 +221,20 @@ func (s *Server) handleProgress(w http.ResponseWriter, r *http.Request, p *princ
 		httpErr(w, 400, "ungültige Anfrage")
 		return
 	}
+	if status == "failed" || status == "canceled" {
+		// the server already closed this job (e.g. no report for too
+		// long, see failStalledJobs): tell the agent to stop working on it
+		writeJSON(w, proto.ProgressReply{Cancel: true})
+		return
+	}
 	if status == "waiting" {
 		s.db.Exec(`UPDATE jobs SET status='running' WHERE id=?`, id)
 	}
-	s.db.Exec(`UPDATE jobs SET percent=?,message=?,files=?,bytes=?,total=? WHERE id=?`, pr.Percent, pr.Message, pr.Files, pr.Bytes, pr.Total, id)
+	s.db.Exec(`UPDATE jobs SET percent=?,message=?,files=?,bytes=?,total=?,updated=? WHERE id=?`, pr.Percent, pr.Message, pr.Files, pr.Bytes, pr.Total, now(), id)
+	if !p.restore() {
+		// agents do not poll while they work on a job
+		s.db.Exec(`UPDATE agents SET last_seen=? WHERE id=?`, now(), p.AgentID)
+	}
 	s.appendLog(id, pr.Log)
 	s.trackSpeed(id, pr.Bytes, pr.Total)
 	s.publishJob(id)
@@ -287,7 +297,7 @@ func (s *Server) handleResult(w http.ResponseWriter, r *http.Request, p *princip
 	s.publishJob(id)
 	switch st {
 	case "failed":
-		go s.notifyFailure(id)
+		s.bg("notifyFailure", func() { s.notifyFailure(id) })
 	case "success":
 		if typ == proto.JobBackup {
 			var agentID string
@@ -311,7 +321,7 @@ func (s *Server) handleStale(w http.ResponseWriter, r *http.Request, p *principa
 		s.db.Exec(`UPDATE jobs SET status='failed',message=?,finished=? WHERE id=?`, res.Message, now(), id)
 		s.db.Exec(`DELETE FROM restore_tokens WHERE job_id=?`, id)
 		s.publishJob(id)
-		go s.notifyFailure(id)
+		s.bg("notifyFailure", func() { s.notifyFailure(id) })
 	}
 	writeJSON(w, map[string]string{"ok": "1"})
 }
@@ -340,6 +350,15 @@ func (s *Server) handlePutChunk(w http.ResponseWriter, r *http.Request, p *princ
 	id, err := repo.ParseID(r.PathValue("id"))
 	if err != nil {
 		httpErr(w, 400, "%v", err)
+		return
+	}
+	// Chunks are only taken for a running backup: a machine can not fill
+	// the storage outside of its jobs, and an agent whose job the server
+	// has closed stops uploading (4xx is not retried).
+	var running int
+	s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE agent_id=? AND type='backup' AND status='running'`, p.AgentID).Scan(&running)
+	if running == 0 {
+		httpErr(w, 409, "kein laufender Backup-Auftrag für diesen Rechner")
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<20))
@@ -434,6 +453,27 @@ func (s *Server) handlePostSnapshot(w http.ResponseWriter, r *http.Request, p *p
 		bytes += v.Bytes
 		newBytes += v.NewBytes
 	}
+	// Every referenced chunk must be in the storage. Chunks of unchanged
+	// files are taken over from the previous backup without an upload, so
+	// a chunk that vanished since then (or a faulty or compromised agent)
+	// would otherwise produce a backup that can not be restored and that
+	// the cleanup has to work around.
+	missing, err := missingChunks(&snap, st)
+	if err != nil {
+		httpErr(w, 400, "Verzeichnisbaum nicht lesbar: %v", err)
+		return
+	}
+	if missing > 0 {
+		// the previous backup can not serve as a base any more: the next
+		// run reads every file again and uploads what is missing
+		if bp.Parent != "" {
+			msg := fmt.Sprintf("%d Datenblöcke fehlen im Speicherort, Backup nur teilweise wiederherstellbar", missing)
+			s.db.Exec(`UPDATE snapshots SET damaged=1,verified=?,verify_ok=0,verify_msg=? WHERE id=? AND agent_id=?`, now(), msg, bp.Parent, p.AgentID)
+		}
+		s.log.Printf("Backup %s von %s abgelehnt: %d Datenblöcke fehlen", snap.ID, p.AgentID, missing)
+		httpErr(w, 400, "Backup unvollständig: %d Datenblöcke fehlen im Speicherort. Das nächste Backup liest alle Dateien neu.", missing)
+		return
+	}
 	data := jsonStr(snap)
 	if _, err := s.db.Exec(`INSERT INTO snapshots(id,agent_id,plan_id,time,kind,files,bytes,new_bytes,data,storage_id,job_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		snap.ID, snap.AgentID, snap.PlanID, snap.Time.Unix(), snap.Kind, files, bytes, newBytes, data, storageID, jobID); err != nil {
@@ -444,11 +484,28 @@ func (s *Server) handlePostSnapshot(w http.ResponseWriter, r *http.Request, p *p
 	os.WriteFile(s.path("snapshots", snap.ID+".json"), []byte(data), 0o600)
 	os.MkdirAll(filepath.Join(st.Dir(), "snapshots"), 0o700)
 	os.WriteFile(filepath.Join(st.Dir(), "snapshots", snap.ID+".json"), []byte(data), 0o600)
-	go s.buildIndex(snap.ID)
+	s.bg("buildIndex", func() { s.buildIndex(snap.ID) })
 	if q := int64(s.settingInt("quarantine_at", 0)); q > 0 && q >= started {
-		go s.checkComplete(snap.ID, st, &snap)
+		s.bg("checkComplete", func() { s.checkComplete(snap.ID, st, &snap) })
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// missingChunks counts the chunks a snapshot references that are not in
+// the store. An error means a tree could not be read at all.
+func missingChunks(snap *repo.Snapshot, st *repo.Store) (int, error) {
+	missing := 0
+	seen := map[repo.ID]struct{}{}
+	err := snap.Refs(st.Get, func(id repo.ID) {
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		if !st.Has(id) {
+			missing++
+		}
+	})
+	return missing, err
 }
 
 func (s *Server) loadSnapshot(id string) (*repo.Snapshot, error) {

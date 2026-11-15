@@ -300,7 +300,7 @@ func (s *Server) handleRolloutCreate(w http.ResponseWriter, r *http.Request, u *
 		}
 	}
 	s.audit(u.Name, "rollout", fmt.Sprintf("%d Rechner (%s)", len(ids), req.Method))
-	go s.runRollouts(ids)
+	s.bg("runRollouts", func() { s.runRollouts(ids) })
 	writeJSON(w, map[string]any{"queued": len(ids)})
 }
 
@@ -308,7 +308,7 @@ func (s *Server) handleRolloutRetry(w http.ResponseWriter, r *http.Request, u *u
 	id := pathID(r)
 	// a manual retry starts a new retry window
 	s.db.Exec(`UPDATE rollouts SET status='queued',message='',attempts=0,next_try=0,created=?,updated=? WHERE id=? AND status<>'done'`, now(), now(), id)
-	go s.runRollouts([]int64{id})
+	s.bg("runRollouts", func() { s.runRollouts([]int64{id}) })
 	writeJSON(w, map[string]string{"ok": "1"})
 }
 
@@ -384,7 +384,7 @@ func (s *Server) retryRollouts() {
 		}
 	}
 	if len(ids) > 0 {
-		go s.runRollouts(ids)
+		s.bg("runRollouts", func() { s.runRollouts(ids) })
 	}
 }
 

@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -17,6 +19,7 @@ import (
 
 func (s *Server) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/login", s.handleLogin)
+	mux.HandleFunc("GET /api/monitor", s.handleMonitor)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("POST /api/rescue/login", s.handleRescueLogin)
 	mux.HandleFunc("GET /api/me", s.admin("viewer", func(w http.ResponseWriter, r *http.Request, u *user) {
@@ -80,7 +83,7 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/rollouts/{id}/retry", s.admin("admin", s.handleRolloutRetry))
 	mux.HandleFunc("POST /api/rollouts/check", s.admin("admin", s.handleRolloutCheck))
 	mux.HandleFunc("POST /api/snapshots/{id}/verify", s.admin("operator", s.handleSnapshotVerify))
-	mux.HandleFunc("GET /api/server-backup",s.admin("admin", s.handleServerBackupStatus))
+	mux.HandleFunc("GET /api/server-backup", s.admin("admin", s.handleServerBackupStatus))
 	mux.HandleFunc("PUT /api/server-backup", s.admin("admin", s.handleServerBackupSave))
 	mux.HandleFunc("POST /api/server-backup/run", s.admin("admin", s.handleServerBackupRun))
 	mux.HandleFunc("GET /api/server-backup/download", s.admin("admin", s.handleServerBackupDownload))
@@ -104,11 +107,11 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/password", s.admin("viewer", s.handlePassword))
 	mux.HandleFunc("GET /api/audit", s.admin("admin", s.handleAudit))
 	mux.HandleFunc("POST /api/maintenance/gc", s.admin("admin", func(w http.ResponseWriter, r *http.Request, u *user) {
-		go s.runGC(u.Name)
+		s.bg("runGC", func() { s.runGC(u.Name) })
 		writeJSON(w, map[string]string{"ok": "Bereinigung gestartet"})
 	}))
 	mux.HandleFunc("POST /api/maintenance/scrub", s.admin("admin", func(w http.ResponseWriter, r *http.Request, u *user) {
-		go s.runScrub(u.Name)
+		s.bg("runScrub", func() { s.runScrub(u.Name) })
 		writeJSON(w, map[string]string{"ok": "Integritätsprüfung gestartet"})
 	}))
 	mux.HandleFunc("GET /api/rescue-status", s.admin("viewer", s.handleRescueStatus))
@@ -961,10 +964,27 @@ func (s *Server) installCommands(tok string) map[string]string {
 		"windows": fmt.Sprintf(`bastion-agent.exe install --server %s --token %s --fingerprint %s`, url, tok, fp),
 		"windows_download": fmt.Sprintf(`powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::ServerCertificateValidationCallback={param($a,$c)([BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash($c.GetRawCertData())).Replace('-','').ToLower() -eq '%[3]s')}; (New-Object Net.WebClient).DownloadFile('%[1]s/dl/agents/windows-amd64/bastion-agent.exe', \"$env:TEMP\bastion-agent.exe\"); & \"$env:TEMP\bastion-agent.exe\" install --server %[1]s --token %[2]s --fingerprint %[3]s"`,
 			url, tok, fp),
-		"linux": fmt.Sprintf(`curl -fsSk %[1]s/dl/agents/linux-amd64/bastion-agent -o /tmp/bastion-agent && chmod +x /tmp/bastion-agent && sudo /tmp/bastion-agent install --server %[1]s --token %[2]s --fingerprint %[3]s`,
-			url, tok, fp),
+		// -k only skips the CA check (self-signed certificate); the pinned
+		// public key is still enforced, so the binary that is about to
+		// run as root really comes from this server
+		"linux": fmt.Sprintf(`curl -fsSk --pinnedpubkey 'sha256//%[4]s' %[1]s/dl/agents/linux-amd64/bastion-agent -o /tmp/bastion-agent && chmod +x /tmp/bastion-agent && sudo /tmp/bastion-agent install --server %[1]s --token %[2]s --fingerprint %[3]s`,
+			url, tok, fp, s.keyPin()),
 		"gpo": fmt.Sprintf(`\\SERVER\Freigabe\bastion-agent.exe install --server %s --token %s --fingerprint %s`, url, tok, fp),
 	}
+}
+
+// keyPin is the public key pin of the server certificate in the form
+// curl --pinnedpubkey expects (base64 of the SHA-256 of the SPKI).
+func (s *Server) keyPin() string {
+	if len(s.tlsCert.Certificate) == 0 {
+		return ""
+	}
+	c, err := x509.ParseCertificate(s.tlsCert.Certificate[0])
+	if err != nil {
+		return ""
+	}
+	h := sha256.Sum256(c.RawSubjectPublicKeyInfo)
+	return base64.StdEncoding.EncodeToString(h[:])
 }
 
 func (s *Server) handleInstallInfo(w http.ResponseWriter, r *http.Request, u *user) {
@@ -975,7 +995,8 @@ func (s *Server) handleInstallInfo(w http.ResponseWriter, r *http.Request, u *us
 
 var settingKeys = []string{"public_url", "max_parallel_backups", "bandwidth_kbps", "gc_time", "scrub_time",
 	"smtp_host", "smtp_port", "smtp_user", "smtp_from", "notify_to", "notify_failure", "notify_stale_days",
-	"pxe_enabled", "pxe_ip", "pxe_dhcp", "rollout_retry_minutes", "rollout_retry_hours", "verify_time", "verify_days"}
+	"pxe_enabled", "pxe_ip", "pxe_dhcp", "rollout_retry_minutes", "rollout_retry_hours", "verify_time", "verify_days",
+	"job_stall_minutes", "keep_jobs_days", "keep_audit_days", "monitor_token"}
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, u *user) {
 	out := map[string]string{}
@@ -1061,6 +1082,8 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request, u *user)
 		return
 	}
 	s.db.Exec(`UPDATE users SET pw=? WHERE id=?`, hashPassword(req.New), u.ID)
+	// whoever knew the old password is logged out; this session stays
+	s.db.Exec(`DELETE FROM sessions WHERE user_id=? AND hash<>?`, u.ID, sessionHash(r))
 	os.Remove(s.path("initial-admin-password.txt"))
 	s.audit(u.Name, "password_change", "")
 	writeJSON(w, map[string]string{"ok": "1"})

@@ -36,7 +36,7 @@ func (s *Server) startMove(planID, to int64, by string) (int64, error) {
 		return 0, err
 	}
 	id, _ := res.LastInsertId()
-	go s.runMove(id, planID, to)
+	s.bg("runMove", func() { s.runMove(id, planID, to) })
 	return id, nil
 }
 
@@ -61,7 +61,7 @@ func (s *Server) runMove(job, planID, to int64) {
 			status, msg, now(), status, job)
 		s.publishJob(job)
 		if status == "failed" {
-			go s.notifyFailure(job)
+			s.bg("notifyFailure", func() { s.notifyFailure(job) })
 		}
 	}
 	// new backups of the plan are held back (s.moving); wait for running ones
@@ -160,7 +160,7 @@ func (s *Server) runMove(job, planID, to int64) {
 		s.db.Exec(`UPDATE snapshots SET storage_id=? WHERE id=?`, to, x.id)
 		logf("Backup %s verschoben (%d Chunks)", x.id, len(ids))
 	}
-	go s.updateRepoStats()
+	s.bg("updateRepoStats", func() { s.updateRepoStats() })
 	s.db.Exec(`UPDATE jobs SET bytes=?,files=? WHERE id=?`, bytes, chunks, job)
 	finish("success", fmt.Sprintf("%d Backups nach %s verschoben, %s kopiert in %s. Der alte Speicherort wird bei der nächsten Bereinigung freigegeben.",
 		len(snaps), dstName, layout.Human(bytes), time.Since(start).Round(time.Second)))

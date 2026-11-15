@@ -62,6 +62,7 @@ var migrations = []struct{ table, column, def string }{
 	{"snapshots", "job_id", "INTEGER DEFAULT 0"},
 	{"snapshots", "damaged", "INTEGER DEFAULT 0"},
 	{"agents", "replaces", "TEXT DEFAULT ''"},
+	{"jobs", "updated", "INTEGER DEFAULT 0"},
 }
 
 func migrate(db *sql.DB) error {

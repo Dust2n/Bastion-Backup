@@ -212,7 +212,7 @@ Seite **Backup-Pläne → Neuer Plan**.
 | Aufbewahrung | letzte / tägliche / wöchentliche / monatliche |
 | Speicherort | Ziel der Backups |
 | Bandbreite | KB/s je Rechner, 0 = unbegrenzt |
-| Ausschlüsse | Muster; bei Images werden Auslagerungsdatei, Ruhezustand, Temp, Update-Cache automatisch ausgelassen |
+| Ausschlüsse | Muster; bei Images werden Auslagerungsdatei, Ruhezustand, Temp, Update-Cache automatisch ausgelassen. Beim Backup-Server selbst kommen die lokalen Speicherorte und der Index-Cache automatisch dazu |
 | Snapshot | für Datei-Backups abschaltbar; Images immer mit Snapshot |
 | Ziele | einzelne Rechner, Gruppen oder alle |
 
@@ -399,6 +399,10 @@ Den Ablauf regelmäßig auf einer Test-VM durchspielen: `restore` in ein leeres 
 | `public_url` | automatisch | Adresse, unter der Agents den Server erreichen |
 | `max_parallel_backups` | 10 | gleichzeitige Backups |
 | `bandwidth_kbps` | 0 | Bandbreite je Rechner |
+| `job_stall_minutes` | 30 | laufender Auftrag gilt als fehlgeschlagen, wenn sich der Rechner so lange nicht meldet; 0 = nie |
+| `keep_jobs_days` | 180 | abgeschlossene Aufträge samt Protokoll löschen; 0 = nie |
+| `keep_audit_days` | 730 | Audit-Protokoll löschen; 0 = nie |
+| `monitor_token` | leer | Token für `GET /api/monitor` (mindestens 16 Zeichen); leer = Endpunkt aus |
 | `gc_time` | 03:30 | tägliche Bereinigung (nicht mehr benötigte Chunks löschen) |
 | `scrub_time` | aus | tägliche Integritätsprüfung aller Chunks |
 | `verify_time` | 04:30 | Uhrzeit der automatischen Restore-Prüfung |
@@ -551,3 +555,22 @@ go vet ./...
 | `internal/tui` | Vollbild-Textoberfläche |
 | `internal/server` | API, Weboberfläche, Zeitplanung, Rollout, Restore-Prüfung, Server-Sicherung, PXE |
 | `rescue/` | Build-Skripte für WinPE, Linux, PXE |
+
+
+## Überwachung von außen
+
+`GET /api/monitor` liefert den Stand als JSON, für Checkmk, Nagios oder eigene Skripte. Der Endpunkt existiert nur, wenn in den Einstellungen ein Monitoring-Token (mindestens 16 Zeichen) gesetzt ist. Das Token erlaubt nur diese Abfrage.
+
+```
+curl -fsSk --pinnedpubkey 'sha256//…' -H "Authorization: Bearer monitor:<Token>" https://<server>:8443/api/monitor
+```
+
+| Feld | Bedeutung |
+|---|---|
+| `ok`, `problems` | Gesamtstand und Liste der Probleme im Klartext |
+| `agents[]` | je Rechner: `online`, `last_backup`, `backup_age` (Sekunden, -1 = keins), `last_status`, `stale` |
+| `storages[]` | je Speicherort: `online`, `free`, `total`, `free_percent`, `used` |
+| `failed_24h`, `running`, `damaged_backups` | fehlgeschlagene Backups der letzten 24 Stunden, laufende Aufträge, beschädigte Backups |
+| `last_cleanup`, `last_server_backup` | Zeitpunkt der letzten Bereinigung und Server-Sicherung |
+
+Als Problem gelten: Rechner ohne Backup oder mit zu altem Backup (`notify_stale_days`), letztes Backup fehlgeschlagen, Speicherort nicht erreichbar oder unter 10 % frei, beschädigte Backups, Server-Sicherung nicht eingerichtet, fehlgeschlagen oder älter als drei Tage.

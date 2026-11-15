@@ -174,6 +174,12 @@ func (r *backupRun) volume(ctx context.Context, spec platform.VolumeSpec, p prot
 	}
 
 	excludes := append([]string{}, p.Excludes...)
+	for _, abs := range p.ExcludePaths {
+		if pat, ok := fsx.ExcludeBelow(spec.Source, abs, runtime.GOOS == "windows"); ok {
+			excludes = append(excludes, pat)
+			r.rep.Log("Ohne %s (Speicherort des Backup-Servers)", abs)
+		}
+	}
 	if p.Kind == "image" {
 		if runtime.GOOS == "windows" {
 			excludes = append(excludes, fsx.DefaultWindowsExcludes...)

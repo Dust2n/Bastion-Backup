@@ -33,7 +33,7 @@ func (s *Server) startVerify(snapID, by string) (int64, error) {
 	}
 	id, _ := res.LastInsertId()
 	s.publishJob(id)
-	go s.runVerify(id, snapID, host)
+	s.bg("runVerify", func() { s.runVerify(id, snapID, host) })
 	return id, nil
 }
 
@@ -53,7 +53,7 @@ func (s *Server) runVerify(job int64, snapID, host string) {
 		s.db.Exec(`UPDATE snapshots SET verified=?,verify_ok=?,verify_msg=? WHERE id=?`, now(), ok, msg, snapID)
 		s.publishJob(job)
 		if !ok {
-			go s.notifyFailure(job)
+			s.bg("notifyFailure", func() { s.notifyFailure(job) })
 		}
 	}
 	s.db.Exec(`UPDATE jobs SET message=? WHERE id=?`, "Prüfe Backup von "+host, job)

@@ -22,7 +22,10 @@ var magic = []byte("BSC1")
 var ErrNotFound = errors.New("chunk not found")
 
 var (
-	zenc, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault), zstd.WithEncoderConcurrency(1))
+	// EncodeAll may be called from several goroutines; the default
+	// concurrency (number of CPUs) lets the upload workers compress in
+	// parallel instead of queueing behind one encoder.
+	zenc, _ = zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
 	zdec, _ = zstd.NewReader(nil, zstd.WithDecoderConcurrency(0), zstd.WithDecoderMaxMemory(64<<20))
 )
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 
 	"bastion/internal/proto"
@@ -48,7 +49,10 @@ func (s *Server) getPlan(id int64) (*plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	rows, _ := s.db.Query(`SELECT target FROM plan_targets WHERE plan_id=?`, id)
+	rows, err := s.db.Query(`SELECT target FROM plan_targets WHERE plan_id=?`, id)
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	for rows.Next() {
 		var t string
@@ -73,6 +77,9 @@ func (s *Server) planAgents(p *plan) []string {
 			rows, _ = s.db.Query(`SELECT id FROM agents WHERE removed=0`)
 		default:
 			continue
+		}
+		if rows == nil {
+			continue // database error: skip this target
 		}
 		for rows.Next() {
 			var id string
@@ -187,7 +194,7 @@ func (s *Server) dispatch(agentID string) (*proto.Job, error) {
 			json.Unmarshal([]byte(c.params), &rp)
 			storage = s.snapStorage(rp.SnapshotID)
 		}
-		res, err := s.db.Exec(`UPDATE jobs SET status='running',started=?,params=? WHERE id=? AND status='queued'`, now(), params, c.id)
+		res, err := s.db.Exec(`UPDATE jobs SET status='running',started=?,updated=?,params=? WHERE id=? AND status='queued'`, now(), now(), params, c.id)
 		if err != nil {
 			return nil, err
 		}
@@ -220,11 +227,83 @@ func (s *Server) backupParams(planID int64, stored, agentID string) (*proto.Back
 	if bp.BandwidthKBps == 0 {
 		bp.BandwidthKBps = s.settingInt("bandwidth_kbps", 0)
 	}
+	if s.ownAgent(agentID) {
+		bp.ExcludePaths = s.ownDataPaths()
+	}
 	// the previous backup only helps if its chunks are in the same storage
 	// and only if none of them is damaged (integrity check)
 	s.db.QueryRow(`SELECT id FROM snapshots WHERE agent_id=? AND plan_id=? AND kind=? AND deleted=0 AND damaged=0 AND storage_id=? ORDER BY time DESC LIMIT 1`,
 		agentID, bp.PlanID, bp.Kind, s.planStorage(planID)).Scan(&bp.Parent)
 	return &bp, nil
+}
+
+// ownAgent reports whether the agent runs on the server's own machine.
+func (s *Server) ownAgent(agentID string) bool {
+	var host, ips string
+	if s.db.QueryRow(`SELECT hostname,ips FROM agents WHERE id=?`, agentID).Scan(&host, &ips) != nil {
+		return false
+	}
+	var list []string
+	json.Unmarshal([]byte(ips), &list)
+	local, _ := os.Hostname()
+	var localIPs []string
+	if addrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range addrs {
+			localIPs = append(localIPs, a.String())
+		}
+	}
+	return sameMachine(host, list, local, localIPs)
+}
+
+// sameMachine compares host name and addresses; both must match, because
+// a host name alone is not unique. Addresses may carry a prefix length.
+func sameMachine(host string, ips []string, localHost string, localIPs []string) bool {
+	if host == "" || !strings.EqualFold(host, localHost) {
+		return false
+	}
+	bare := func(s string) string {
+		if i := strings.IndexByte(s, '/'); i >= 0 {
+			s = s[:i]
+		}
+		if ip := net.ParseIP(s); ip != nil && !ip.IsLoopback() {
+			return ip.String()
+		}
+		return ""
+	}
+	have := map[string]bool{}
+	for _, a := range localIPs {
+		if b := bare(a); b != "" {
+			have[b] = true
+		}
+	}
+	for _, a := range ips {
+		if b := bare(a); b != "" && have[b] {
+			return true
+		}
+	}
+	return false
+}
+
+// ownDataPaths are the directories a backup of the server's own machine
+// must leave out: the local repositories (a backup of a repository into
+// itself grows with every run and can not be deduplicated, the chunks are
+// encrypted) and the index cache, which is rebuilt when needed. Database,
+// keys and certificate stay in the backup.
+func (s *Server) ownDataPaths() []string {
+	out := []string{s.path("cache")}
+	rows, err := s.db.Query(`SELECT path FROM storages WHERE kind='local'`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		rows.Scan(&p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func (s *Server) appendLog(jobID int64, lines []string) {

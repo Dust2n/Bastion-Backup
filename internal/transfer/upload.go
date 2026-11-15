@@ -47,6 +47,12 @@ func (l *Limiter) Wait(ctx context.Context, n int) error {
 	return nil
 }
 
+// The server answers up to 1000 IDs per request.
+const (
+	missingBatch      = 256
+	missingBatchBytes = 32 << 20
+)
+
 type item struct {
 	id   repo.ID
 	data []byte
@@ -147,6 +153,7 @@ func (u *Uploader) Add(data []byte) (repo.ID, error) {
 func (u *Uploader) batcher() {
 	defer u.wg.Done()
 	var batch []item
+	batchBytes := 0
 	timer := time.NewTimer(time.Hour)
 	flush := func() {
 		if len(batch) == 0 {
@@ -166,7 +173,7 @@ func (u *Uploader) batcher() {
 		}
 		if err != nil {
 			u.fail(err)
-			batch = nil
+			batch, batchBytes = nil, 0
 			return
 		}
 		missing := map[repo.ID]bool{}
@@ -182,7 +189,7 @@ func (u *Uploader) batcher() {
 				}
 			}
 		}
-		batch = nil
+		batch, batchBytes = nil, 0
 	}
 	for {
 		select {
@@ -192,10 +199,13 @@ func (u *Uploader) batcher() {
 				return
 			}
 			batch = append(batch, it)
+			batchBytes += len(it.data)
 			if len(batch) == 1 {
 				timer.Reset(200 * time.Millisecond)
 			}
-			if len(batch) >= 16 {
+			// one question to the server for many chunks; the batch is held
+			// in memory, so it is bounded by size as well as by count
+			if len(batch) >= missingBatch || batchBytes >= missingBatchBytes {
 				flush()
 			}
 		case <-timer.C:

@@ -65,7 +65,7 @@ func (s *Server) ensureAdmin() error {
 	}
 	f := s.path("initial-admin-password.txt")
 	os.WriteFile(f, []byte("Benutzer: admin\nPasswort: "+pw+"\n"), 0o600)
-	s.log.Printf("Erster Administrator angelegt: admin / %s (auch in %s; bitte nach der Anmeldung ändern)", pw, f)
+	s.log.Printf("Erster Administrator angelegt: admin, Passwort in %s (bitte nach der Anmeldung ändern)", f)
 	return nil
 }
 
@@ -122,13 +122,46 @@ func (s *Server) admin(role string, h func(http.ResponseWriter, *http.Request, *
 	}
 }
 
+// Failed logins are limited per address and per user name: 10 wrong
+// passwords from one address or 30 for one account within 5 minutes.
+// Successful logins do not count, so scripts and several administrators
+// behind one address (reverse proxy) do not lock each other out.
+const userFailFactor = 3
+
+func (s *Server) loginBlocked(r *http.Request, name string) bool {
+	if s.login.blocked("ip:" + clientIP(r)) {
+		return true
+	}
+	// the account limit is three times the address limit
+	s.login.mu.Lock()
+	n := len(s.login.recent("user:" + strings.ToLower(name)))
+	s.login.mu.Unlock()
+	return n >= s.login.max*userFailFactor
+}
+
+func (s *Server) loginFailed(r *http.Request, name string) {
+	s.login.fail("ip:" + clientIP(r))
+	s.login.fail("user:" + strings.ToLower(name))
+}
+
+// sessionHash is the stored form of the session token of a request.
+func sessionHash(r *http.Request) string {
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer session:") {
+		return sha(strings.TrimPrefix(h, "Bearer session:"))
+	}
+	if c, err := r.Cookie("bastion_session"); err == nil {
+		return sha(c.Value)
+	}
+	return ""
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Name, Password string }
 	if err := readJSON(r, &req); err != nil {
 		httpErr(w, 400, "ungültige Anfrage")
 		return
 	}
-	if !s.login.allow(clientIP(r)) {
+	if s.loginBlocked(r, req.Name) {
 		httpErr(w, 429, "zu viele Anmeldeversuche, bitte später erneut versuchen")
 		return
 	}
@@ -137,6 +170,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	err := s.db.QueryRow(`SELECT id,pw FROM users WHERE name=?`, req.Name).Scan(&id, &pw)
 	if err != nil || !checkPassword(pw, req.Password) {
 		time.Sleep(500 * time.Millisecond)
+		s.loginFailed(r, req.Name)
 		s.audit(req.Name, "login_failed", clientIP(r))
 		httpErr(w, 401, "Benutzername oder Passwort falsch")
 		return
@@ -159,7 +193,7 @@ func (s *Server) handleRescueLogin(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, "ungültige Anfrage")
 		return
 	}
-	if !s.login.allow(clientIP(r)) {
+	if s.loginBlocked(r, req.Name) {
 		httpErr(w, 429, "zu viele Anmeldeversuche, bitte später erneut versuchen")
 		return
 	}
@@ -168,6 +202,7 @@ func (s *Server) handleRescueLogin(w http.ResponseWriter, r *http.Request) {
 	err := s.db.QueryRow(`SELECT id,pw,role FROM users WHERE name=?`, req.Name).Scan(&id, &pw, &role)
 	if err != nil || !checkPassword(pw, req.Password) {
 		time.Sleep(500 * time.Millisecond)
+		s.loginFailed(r, req.Name)
 		s.audit(req.Name, "rescue_login_failed", clientIP(r))
 		httpErr(w, 401, "Benutzername oder Passwort falsch")
 		return

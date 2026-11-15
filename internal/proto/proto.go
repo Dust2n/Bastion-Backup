@@ -57,10 +57,14 @@ type Job struct {
 }
 
 type BackupParams struct {
-	PlanID        int64    `json:"plan_id"`
-	Kind          string   `json:"kind"`            // image | files
-	Paths         []string `json:"paths,omitempty"` // for kind=files
-	Excludes      []string `json:"excludes,omitempty"`
+	PlanID   int64    `json:"plan_id"`
+	Kind     string   `json:"kind"`            // image | files
+	Paths    []string `json:"paths,omitempty"` // for kind=files
+	Excludes []string `json:"excludes,omitempty"`
+	// ExcludePaths are absolute paths on the machine that are left out
+	// with everything below them. The server sets it for the agent on its
+	// own machine, so it does not back up its repositories into themselves.
+	ExcludePaths  []string `json:"exclude_paths,omitempty"`
 	Parent        string   `json:"parent,omitempty"` // previous snapshot for incremental reading
 	BandwidthKBps int      `json:"bandwidth_kbps,omitempty"`
 	UseSnapshot   bool     `json:"use_snapshot"`

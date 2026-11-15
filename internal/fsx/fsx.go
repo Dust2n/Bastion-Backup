@@ -68,5 +68,30 @@ func Excluded(rel string, patterns []string, fold bool) bool {
 	return false
 }
 
+// ExcludeBelow turns an absolute path into an exclude pattern for a backup
+// that reads from root: everything below abs is left out, the directory
+// itself stays (empty), so the path exists again after a restore. It
+// returns false when abs does not lie inside root. fold compares without
+// case (Windows).
+func ExcludeBelow(root, abs string, fold bool) (string, bool) {
+	norm := func(p string) string {
+		p = strings.TrimRight(strings.ReplaceAll(p, "\\", "/"), "/")
+		if fold {
+			p = strings.ToLower(p)
+		}
+		return p
+	}
+	r, a := norm(root), norm(abs)
+	if a == r {
+		return "*", true
+	}
+	if !strings.HasPrefix(a, r+"/") {
+		return "", false
+	}
+	// keep the original spelling of the part below root
+	orig := strings.TrimRight(strings.ReplaceAll(abs, "\\", "/"), "/")
+	return orig[len(r)+1:] + "/*", true
+}
+
 // InlineLimit: streams up to this size are stored in the tree itself.
 const InlineLimit = 4096

@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -220,6 +221,9 @@ func (s *Server) Handler() http.Handler {
 	return logRequests(s.log, mux)
 }
 
+// maxJSONBody limits every request except chunk uploads.
+const maxJSONBody = 4 << 20
+
 func logRequests(l *log.Logger, h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -231,8 +235,16 @@ func logRequests(l *log.Logger, h http.Handler) http.Handler {
 		// Read the (bounded) body up front: if a handler answers without
 		// reading it, Go closes the connection for clients that sent
 		// "Expect: 100-continue" (e.g. PowerShell), breaking keep-alive.
-		if r.Body != nil && r.ContentLength != 0 {
-			body, err := io.ReadAll(io.LimitReader(r.Body, 17<<20))
+		// Chunk uploads are read by their handler after the agent has been
+		// authenticated (and come from agents, which do not use Expect);
+		// everything else is small JSON. So nobody without a login can
+		// make the server hold more than maxJSONBody per connection.
+		if r.Body != nil && r.ContentLength != 0 && !(r.Method == "PUT" && strings.HasPrefix(r.URL.Path, "/api/agent/chunks/")) {
+			if r.ContentLength > maxJSONBody {
+				http.Error(w, "Anfrage zu groß", http.StatusRequestEntityTooLarge)
+				return
+			}
+			body, err := io.ReadAll(io.LimitReader(r.Body, maxJSONBody))
 			if err != nil {
 				http.Error(w, "Anfrage unvollständig", 400)
 				return
@@ -254,11 +266,11 @@ func (s *Server) Run(ctx context.Context) error {
 		ErrorLog:          log.New(discardTLSNoise{s.log}, "", 0),
 	}
 	go s.scheduler(ctx)
-	go func() {
+	s.bg("Start", func() {
 		s.importNewerSnapshots()
 		s.updateRepoStats()
 		s.indexMissing()
-	}()
+	})
 	if s.opt.PXE || s.setting("pxe_enabled", "") == "1" {
 		go s.runPXE(ctx)
 	}
@@ -313,6 +325,19 @@ func httpErr(w http.ResponseWriter, code int, format string, args ...any) {
 	http.Error(w, fmt.Sprintf(format, args...), code)
 }
 
+// bg runs a background task. A panic in it is logged instead of ending
+// the whole server process (and with it every running backup).
+func (s *Server) bg(name string, f func()) {
+	go func() {
+		defer func() {
+			if v := recover(); v != nil {
+				s.log.Printf("interner Fehler in %s: %v\n%s", name, v, debug.Stack())
+			}
+		}()
+		f()
+	}()
+}
+
 // notifyAgent wakes up a long-polling agent.
 func (s *Server) notifyAgent(id string) {
 	s.wakeMu.Lock()
@@ -363,6 +388,47 @@ func (r *rateLimiter) allow(key string) bool {
 	}
 	r.hits[key] = append(h, time.Now())
 	return true
+}
+
+// blocked reports whether key has used up its failed attempts.
+func (r *rateLimiter) blocked(key string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.recent(key)) >= r.max
+}
+
+// fail records a failed attempt.
+func (r *rateLimiter) fail(key string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hits[key] = append(r.recent(key), time.Now())
+}
+
+// recent drops expired entries of key (and the key itself once empty).
+func (r *rateLimiter) recent(key string) []time.Time {
+	cut := time.Now().Add(-r.window)
+	h := r.hits[key][:0]
+	for _, t := range r.hits[key] {
+		if t.After(cut) {
+			h = append(h, t)
+		}
+	}
+	if len(h) == 0 {
+		delete(r.hits, key)
+		return nil
+	}
+	r.hits[key] = h
+	return h
+}
+
+// sweep forgets keys without recent entries, so the table does not grow
+// with every address that ever connected.
+func (r *rateLimiter) sweep() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for k := range r.hits {
+		r.recent(k)
+	}
 }
 
 func clientIP(r *http.Request) string {
