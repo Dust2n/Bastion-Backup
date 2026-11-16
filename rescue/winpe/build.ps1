@@ -108,7 +108,11 @@ if ($LASTEXITCODE -ne 0) { throw "DISM Unmount fehlgeschlagen" }
 
 Copy-Item $wim "$Out\winpe.wim" -Force
 Write-Host "Erzeuge ISO"
-cmd /c "`"$adk\Deployment Tools\DandISetEnv.bat`" && MakeWinPEMedia /ISO /F `"$work`" `"$Out\bastion-rescue-winpe.iso`"" | Out-Null
+# MakeWinPEMedia (oscdimg) writes its progress to stderr. Redirected inside cmd,
+# so a caller running with $ErrorActionPreference = 'Stop' is not aborted by it;
+# the exit code decides.
+cmd /c "`"$adk\Deployment Tools\DandISetEnv.bat`" && MakeWinPEMedia /ISO /F `"$work`" `"$Out\bastion-rescue-winpe.iso`" 2>&1" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "MakeWinPEMedia fehlgeschlagen (Code $LASTEXITCODE)" }
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 Write-Host "Fertig:"
 Get-ChildItem "$Out\winpe.wim", "$Out\bastion-rescue-winpe.iso" | Format-Table Name, @{n = 'MB'; e = { [math]::Round($_.Length / 1MB) } }

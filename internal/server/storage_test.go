@@ -117,10 +117,7 @@ func TestStoragesAndMove(t *testing.T) {
 	// GC of the old storage frees the moved chunks (after the grace period)
 	src, _ := s.storeByID(def)
 	old := time.Now().Add(-7 * time.Hour)
-	src.Walk(func(c repo.ChunkInfo) error {
-		p := filepath.Join(src.Dir(), "chunks", c.ID.String()[:2], c.ID.String()[2:4], c.ID.String())
-		return os.Chtimes(p, old, old)
-	})
+	src.Walk(func(c repo.ChunkInfo) error { return osChtimes(src, c.ID, old) })
 	st, err := s.gcStorage(def)
 	if err != nil {
 		t.Fatal(err)

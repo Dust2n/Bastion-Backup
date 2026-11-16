@@ -118,6 +118,10 @@ func TestCleanupSurvivesIncompleteBackup(t *testing.T) {
 	s.db.Exec(`INSERT INTO snapshots(id,agent_id,plan_id,time,kind,files,bytes,new_bytes,data,storage_id) VALUES('kaputt','a1',0,?,'files',1,14,0,?,?)`,
 		now(), jsonStr(bad), def)
 
+	// in a pack of its own: a pack nobody needs is deleted, while a single
+	// unused chunk in a pack that is otherwise needed stays until the pack
+	// is worth rewriting
+	st.Seal()
 	orphan, _ := st.Put([]byte("gehört zu keinem backup"))
 	old := time.Now().Add(-24 * time.Hour)
 	st.Walk(func(c repo.ChunkInfo) error {

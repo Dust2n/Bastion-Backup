@@ -453,6 +453,11 @@ func (s *Server) handlePostSnapshot(w http.ResponseWriter, r *http.Request, p *p
 		bytes += v.Bytes
 		newBytes += v.NewBytes
 	}
+	// What the backup refers to must be on disk before it is accepted.
+	if err := st.Flush(); err != nil {
+		httpErr(w, 500, "Speicherort: %v", err)
+		return
+	}
 	// Every referenced chunk must be in the storage. Chunks of unchanged
 	// files are taken over from the previous backup without an upload, so
 	// a chunk that vanished since then (or a faulty or compromised agent)

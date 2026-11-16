@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"io"
 	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -17,6 +16,24 @@ func testStore(t *testing.T) *Store {
 		t.Fatal(err)
 	}
 	return s
+}
+
+// flipByte damages the last byte of a stored chunk.
+func flipByte(t *testing.T, s *Store, id ID) {
+	t.Helper()
+	file, off, n, ok := s.Location(id)
+	if !ok {
+		t.Fatal("chunk not stored")
+	}
+	f, err := os.OpenFile(file, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	b := make([]byte, 1)
+	f.ReadAt(b, off+int64(n)-1)
+	b[0] ^= 1
+	f.WriteAt(b, off+int64(n)-1)
 }
 
 func TestRoundTripAndDedup(t *testing.T) {
@@ -79,14 +96,10 @@ func TestRejectsWrongContent(t *testing.T) {
 func TestDetectsTampering(t *testing.T) {
 	s := testStore(t)
 	id, _ := s.Put([]byte("important"))
-	p := s.path(id)
-	b, _ := os.ReadFile(p)
-	b[len(b)-1] ^= 1
-	os.WriteFile(p, b, 0o600)
+	flipByte(t, s, id)
 	if _, err := s.Get(id); err == nil {
 		t.Fatal("tampering not detected")
 	}
-	_ = filepath.Base(p)
 }
 
 func TestTreeRoundTrip(t *testing.T) {

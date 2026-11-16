@@ -61,9 +61,68 @@ func restore(args []string) {
 	fmt.Println("Jetzt den Server starten bzw. den Dienst einrichten: bastion-server -install-service -data", *data)
 }
 
+// update installs a release from a folder over the running installation:
+// agent packages, rescue scripts, documentation and the server program,
+// then restarts the service. Run it from the installed program or from the
+// new one in the release folder.
+func update(args []string) {
+	fs := flag.NewFlagSet("update", flag.ExitOnError)
+	from := fs.String("from", "", "Ordner mit dem Release (dist bzw. entpacktes Archiv)")
+	data := fs.String("data", "", "Datenverzeichnis (Standard: das des eingerichteten Dienstes)")
+	exe := fs.String("exe", "", "installiertes Server-Programm (Standard: das des eingerichteten Dienstes)")
+	noRestart := fs.Bool("no-restart", false, "Dienst nicht neu starten")
+	fs.Parse(args)
+	if *from == "" {
+		fmt.Fprintln(os.Stderr, "Verwendung: bastion-server update -from <Release-Ordner> [-data <Datenverzeichnis>] [-exe <Programm>] [-no-restart]")
+		os.Exit(2)
+	}
+	svcExe, svcData, haveSvc := installedService()
+	if *exe == "" {
+		*exe = svcExe
+	}
+	if *exe == "" {
+		*exe, _ = os.Executable()
+	}
+	if *data == "" {
+		*data = svcData
+	}
+	if *data == "" {
+		*data = defaultDataDir()
+	}
+	if _, err := os.Stat(filepath.Join(*data, "bastion.db")); err != nil {
+		fmt.Fprintf(os.Stderr, "Fehler: %s ist kein Datenverzeichnis eines Bastion-Servers (-data angeben)\n", *data)
+		os.Exit(1)
+	}
+	fmt.Printf("Programm: %s\nDaten:    %s\n", *exe, *data)
+	plan, err := server.ApplyUpdate(*from, *data, *exe, os.Stdout)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Fehler:", err)
+		os.Exit(1)
+	}
+	switch {
+	case !plan.Server:
+		fmt.Println("Kein Neustart nötig.")
+	case *noRestart || !haveSvc:
+		fmt.Println("Bitte den Server neu starten, damit die neue Version läuft.")
+	default:
+		fmt.Println("Starte den Dienst neu …")
+		if err := restartService(); err != nil {
+			fmt.Fprintln(os.Stderr, "Fehler beim Neustart:", err)
+			fmt.Fprintf(os.Stderr, "Zurück zur alten Version: %s wieder in %s umbenennen und den Dienst starten.\n", plan.Previous, *exe)
+			os.Exit(1)
+		}
+		fmt.Println("Dienst läuft mit Version", plan.Version)
+	}
+	fmt.Println("Agents aktualisieren: Weboberfläche → Rechner → „Alle aktualisieren“ (oder Einstellung „Nach Server-Update Agents aktualisieren“).")
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "restore" {
 		restore(os.Args[2:])
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "update" {
+		update(os.Args[2:])
 		return
 	}
 	data := flag.String("data", defaultDataDir(), "Datenverzeichnis (Datenbank, Repository, Schlüssel)")

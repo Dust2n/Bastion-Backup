@@ -46,3 +46,36 @@ WantedBy=multi-user.target
 	}
 	return nil
 }
+
+const unitFile = "/etc/systemd/system/bastion-server.service"
+
+// installedService returns program and data directory from the systemd unit.
+func installedService() (exe, data string, ok bool) {
+	b, err := os.ReadFile(unitFile)
+	if err != nil {
+		return "", "", false
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if !strings.HasPrefix(line, "ExecStart=") {
+			continue
+		}
+		args := strings.Fields(strings.TrimPrefix(line, "ExecStart="))
+		if len(args) == 0 {
+			break
+		}
+		exe = args[0]
+		for i := 1; i+1 < len(args); i++ {
+			if args[i] == "-data" || args[i] == "--data" {
+				data = args[i+1]
+			}
+		}
+	}
+	return exe, data, true
+}
+
+func restartService() error {
+	if out, err := exec.Command("systemctl", "restart", "bastion-server").CombinedOutput(); err != nil {
+		return fmt.Errorf("%v: %s", err, out)
+	}
+	return nil
+}

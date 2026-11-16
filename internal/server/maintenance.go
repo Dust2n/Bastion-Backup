@@ -104,7 +104,7 @@ func (s *Server) schedulerTick(last, cur time.Time) {
 			if err != nil {
 				continue
 			}
-			for _, a := range s.planAgents(pl) {
+			for _, a := range s.reachablePlanAgents(pl) {
 				s.enqueue(a, p.id, proto.JobBackup, proto.BackupParams{PlanID: p.id}, "Zeitplan")
 			}
 		}
@@ -142,6 +142,8 @@ func (s *Server) schedulerTick(last, cur time.Time) {
 		orows.Close()
 	}
 	s.failStalledJobs()
+	s.expireQueuedBackups()
+	s.flushStores()
 	s.login.sweep()
 	s.codes.sweep()
 	// image restores that never came back
@@ -161,6 +163,68 @@ func (s *Server) pruneHistory() {
 	}
 	if d := int64(s.settingInt("keep_audit_days", 730)); d > 0 {
 		s.db.Exec(`DELETE FROM audit WHERE time<?`, now()-d*86400)
+	}
+}
+
+// reachablePlanAgents are the machines a scheduled run of the plan covers.
+// A machine that only belongs to the plan through "all" or a group and has
+// not been seen for skip_offline_days (30) is left out: a decommissioned
+// machine would otherwise get a new job every night. Machines named in the
+// plan are always included; "no backup for n days" is still reported by
+// notifyStale and the monitoring endpoint.
+func (s *Server) reachablePlanAgents(p *plan) []string {
+	all := s.planAgents(p)
+	days := int64(s.settingInt("skip_offline_days", 30))
+	if days <= 0 {
+		return all
+	}
+	named := map[string]bool{}
+	for _, t := range p.Targets {
+		if strings.HasPrefix(t, "agent:") {
+			named[strings.TrimPrefix(t, "agent:")] = true
+		}
+	}
+	out := all[:0]
+	for _, id := range all {
+		var seen int64
+		s.db.QueryRow(`SELECT last_seen FROM agents WHERE id=?`, id).Scan(&seen)
+		if named[id] || seen >= now()-days*86400 {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// expireQueuedBackups closes scheduled backups the machine never fetched
+// (switched off, gone). The next scheduled run queues a new one; without
+// this a job would wait in the queue for ever.
+func (s *Server) expireQueuedBackups() {
+	hours := int64(s.settingInt("queue_expire_hours", 24))
+	if hours <= 0 {
+		return
+	}
+	rows, err := s.db.Query(`SELECT id FROM jobs WHERE type='backup' AND status='queued' AND created<?`, now()-hours*3600)
+	if err != nil {
+		return
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		rows.Scan(&id)
+		ids = append(ids, id)
+	}
+	rows.Close()
+	msg := fmt.Sprintf("Rechner hat den Auftrag %d Stunden lang nicht abgeholt (ausgeschaltet oder nicht erreichbar)", hours)
+	for _, id := range ids {
+		res, err := s.db.Exec(`UPDATE jobs SET status='failed',message=?,finished=? WHERE id=? AND status='queued'`, msg, now(), id)
+		if err != nil {
+			continue
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			continue
+		}
+		s.publishJob(id)
+		s.bg("notifyFailure", func() { s.notifyFailure(id) })
 	}
 }
 
@@ -414,22 +478,16 @@ func (s *Server) gcStorage(sid int64) (*storageStats, error) {
 			x.damaged = true
 		}
 	}
-	// chunks younger than 6 hours may belong to a running upload or move
-	cutoff := time.Now().Add(-6 * time.Hour)
-	st := &storageStats{Time: now()}
-	err = store.Walk(func(c repo.ChunkInfo) error {
-		if _, ok := live[c.ID]; !ok && c.ModTime.Before(cutoff) {
-			if store.Delete(c.ID) == nil {
-				st.Freed += c.Size
-			}
-			return nil
-		}
-		st.Chunks++
-		st.Bytes += c.Size
-		return nil
-	})
+	// Chunks younger than 6 hours may belong to a running upload or move.
+	// Compact deletes what is unreferenced, rewrites packs that are mostly
+	// unused and moves chunk files of the old format into packs.
+	res, err := store.Compact(live, time.Now().Add(-6*time.Hour))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	st := &storageStats{Time: now(), Chunks: res.Chunks, Bytes: res.Bytes, Freed: res.Freed}
+	if res.Migrated > 0 || res.Repacked > 0 {
+		s.log.Printf("Bereinigung %s: %d Chunks aus Einzeldateien in Packs übernommen, %d aus alten Packs umgepackt", name, res.Migrated, res.Repacked)
 	}
 	s.setSetting(fmt.Sprintf("storage_stats:%d", sid), jsonStr(st))
 	return st, nil
@@ -453,11 +511,7 @@ func (s *Server) updateRepoStats() {
 			continue
 		}
 		st := storageStats{Time: now()}
-		store.Walk(func(c repo.ChunkInfo) error {
-			st.Chunks++
-			st.Bytes += c.Size
-			return nil
-		})
+		st.Chunks, st.Bytes = store.Stats()
 		s.setSetting(fmt.Sprintf("storage_stats:%d", sid), jsonStr(st))
 		total.Chunks += st.Chunks
 		total.Bytes += st.Bytes

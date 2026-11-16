@@ -15,7 +15,7 @@ func TestTornChunkIsMissing(t *testing.T) {
 	}
 	data := []byte("Inhalt eines Blocks")
 	id := Hash(data)
-	p := s.path(id)
+	p := s.loosePath(id)
 	os.MkdirAll(p[:len(p)-len(id.String())-1], 0o700)
 	if err := os.WriteFile(p, nil, 0o600); err != nil {
 		t.Fatal(err)

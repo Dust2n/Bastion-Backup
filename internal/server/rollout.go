@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -20,6 +21,8 @@ import (
 	"github.com/go-ldap/ldap/v3"
 	"github.com/masterzen/winrm"
 	"golang.org/x/crypto/ssh"
+
+	"bastion/internal/client"
 )
 
 // ---------- credentials ----------
@@ -133,16 +136,26 @@ func (s *Server) handleDiscoverLDAP(w http.ResponseWriter, r *http.Request, u *u
 	if req.TLS {
 		url = "ldaps://" + req.Server + ":636"
 	}
-	l, err := ldap.DialURL(url, ldap.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}))
+	// The bind sends the password of a domain account. It only goes over a
+	// TLS connection to a domain controller whose certificate is trusted:
+	// by the system's certificate store or by a pinned fingerprint.
+	tlsCfg, seen := ldapTLSConfig(req.Server, strings.Fields(strings.ReplaceAll(s.setting("ldap_fingerprints", ""), ",", " ")),
+		s.setting("ldap_insecure", "") == "1")
+	l, err := ldap.DialURL(url, ldap.DialWithDialer(&net.Dialer{Timeout: 10 * time.Second}), ldap.DialWithTLSConfig(tlsCfg))
+	if err == nil && !req.TLS {
+		if err = l.StartTLS(tlsCfg); err != nil {
+			l.Close()
+		}
+	}
 	if err != nil {
-		httpErr(w, 502, "Verbindung zu %s: %v", req.Server, err)
+		if fp := seen(); fp != "" {
+			httpErr(w, 502, "Zertifikat von %s ist nicht vertrauenswürdig (%v). SHA-256-Fingerabdruck des vorgelegten Zertifikats: %s – nach Prüfung unter Einstellungen → „AD: vertraute Zertifikate“ eintragen. Es wurde kein Passwort gesendet.", req.Server, err, fp)
+			return
+		}
+		httpErr(w, 502, "Verschlüsselte Verbindung zu %s nicht möglich: %v. Es wurde kein Passwort gesendet.", req.Server, err)
 		return
 	}
 	defer l.Close()
-	if !req.TLS {
-		// try to protect the bind with StartTLS (domain controllers usually support it)
-		l.StartTLS(tlsInsecure())
-	}
 	if err := l.Bind(c.User, c.Secret); err != nil {
 		httpErr(w, 403, "Anmeldung am Verzeichnis: %v", err)
 		return
@@ -182,9 +195,65 @@ func (s *Server) handleDiscoverLDAP(w http.ResponseWriter, r *http.Request, u *u
 	writeJSON(w, hosts)
 }
 
-// tlsInsecure is used for StartTLS to domain controllers, whose certificates
-// usually come from an internal CA. It still encrypts the bind password.
-func tlsInsecure() *tls.Config { return &tls.Config{InsecureSkipVerify: true} }
+// ldapTLSConfig verifies the certificate of a domain controller. It is
+// accepted if its SHA-256 fingerprint is pinned, or if it chains to the
+// system's certificate store and is issued for host. Domain controllers
+// usually get their certificate from an internal CA the backup server does
+// not know, hence the pins. insecure accepts any certificate (encryption
+// without authentication, the behaviour up to 0.3.2). seen returns the
+// fingerprint of the certificate the server presented, for the error
+// message.
+func ldapTLSConfig(host string, pins []string, insecure bool) (cfg *tls.Config, seen func() string) {
+	want := map[string]bool{}
+	for _, p := range pins {
+		if p = client.NormalizeFingerprint(p); p != "" {
+			want[p] = true
+		}
+	}
+	var mu sync.Mutex
+	presented := ""
+	cfg = &tls.Config{
+		ServerName: host,
+		MinVersion: tls.VersionTLS12,
+		// verification happens below, so a pinned certificate does not
+		// also have to pass the chain and name check
+		InsecureSkipVerify: true,
+		VerifyPeerCertificate: func(raw [][]byte, _ [][]*x509.Certificate) error {
+			if len(raw) == 0 {
+				return errors.New("kein Zertifikat vorgelegt")
+			}
+			fp := client.Fingerprint(raw[0])
+			mu.Lock()
+			presented = fp
+			mu.Unlock()
+			if insecure || want[fp] {
+				return nil
+			}
+			leaf, err := x509.ParseCertificate(raw[0])
+			if err != nil {
+				return err
+			}
+			inter := x509.NewCertPool()
+			for _, der := range raw[1:] {
+				if c, err := x509.ParseCertificate(der); err == nil {
+					inter.AddCert(c)
+				}
+			}
+			opts := x509.VerifyOptions{Intermediates: inter}
+			if net.ParseIP(host) == nil {
+				opts.DNSName = host
+			}
+			if _, err := leaf.Verify(opts); err != nil {
+				return err
+			}
+			if ip := net.ParseIP(host); ip != nil {
+				return leaf.VerifyHostname(host)
+			}
+			return nil
+		},
+	}
+	return cfg, func() string { mu.Lock(); defer mu.Unlock(); return presented }
+}
 
 func probe(host string, port int) bool {
 	c, err := net.DialTimeout("tcp", net.JoinHostPort(host, fmt.Sprint(port)), 800*time.Millisecond)

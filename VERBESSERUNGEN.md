@@ -38,10 +38,21 @@ Verhaltensänderung: Ein neu installierter Rechner startet ohne alten Verlauf, b
 | **Keine Tests für Agent und Übertragung.** | `TestBackupRestoreEndToEnd` startet Server und Agent über TLS: Backup, inkrementelles Backup, Wiederherstellung, Vergleich aller Dateien. | |
 | **Abhängigkeiten.** | `go mod tidy`; `golang.org/x/crypto` 0.59, `x/net` 0.62, `x/sys` 0.50. **Braucht jetzt Go 1.26.** CI unter `.github/workflows/ci.yml` (vet, Tests, Race-Erkennung, govulncheck). | |
 
+## Behoben (0.4.0)
+
+| Problem | Lösung | Test |
+|---|---|---|
+| **Eine Datei pro Chunk.** Pro Chunk ein Anlegen, ein `fsync`, ein Umbenennen; Hunderttausende kleiner Dateien; jede Abfrage „schon vorhanden?“ ein `os.Stat`. | **Packdateien** (`internal/repo/store.go`, `compact.go`): Chunks werden an Packs von etwa 64 MB angehängt, das Verzeichnis liegt im Speicher, `fsync` beim Annehmen eines Backups und alle 30 Sekunden. Packs beschreiben sich selbst und werden nach einem Absturz Satz für Satz geprüft. Die Bereinigung löscht ungenutzte Packs, packt Packs mit über 30 % Leerraum um und übernimmt Einzeldateien des alten Formats. Kein Zurück auf 0.3.x. | `TestPacksRoundTrip`, `TestPacksConcurrent`, `TestPackRecoveryAfterCrash`, `TestMigrationFromSingleFiles`, `TestCompactPacks`, `TestDeleteFromPack`, `TestCopyBetweenFormats`; Umstieg mit den Programmen 0.3.2 und 0.4.0 von Hand geprüft |
+| **AD-Suche ohne Zertifikatsprüfung.** StartTLS ohne Prüfung, und ein gescheitertes StartTLS wurde ignoriert: Das Passwort des Domänenkontos konnte im Klartext gesendet werden. | Bind nur über TLS mit geprüftem Zertifikat (Zertifikatsspeicher des Systems oder hinterlegter Fingerabdruck, `ldap_fingerprints`). Bei unbekanntem Zertifikat Abbruch ohne Senden des Passworts, mit Fingerabdruck in der Meldung. | `TestLDAPCertificateCheck` |
+| **Kein Update-Weg für den Server.** | `bastion-server update -from <Ordner>`: Agent-Pakete, Rettungsskripte, Programm, Dienst-Neustart. Danach baut der Server ein vorhandenes WinPE neu und aktualisiert auf Wunsch die Agents. | `TestApplyUpdate`, `TestAfterVersionChange` |
+| **Rettungssystem nur von Hand zu bauen**; `build.ps1` brach aufrufende Skripte ab, weil `oscdimg` seinen Fortschritt auf die Fehlerausgabe schreibt. | Bau als Server-Auftrag (`POST /api/rescue/build`, Knopf auf der Seite Rettungssysteme), Treiber aus `<data>\rescue\drivers`; `build.ps1` leitet die Fehlerausgabe um und wertet den Rückgabewert aus. | `TestRescueBuildJob` |
+| **Backups ohne Plan ließen sich nicht verschieben.** | `POST /api/plans/0/move` mit Ziel; Knopf „Backups ohne Plan hierher“ auf der Seite Speicherorte. | `TestMoveUnplanned` |
+| **Ziel „alle“ erfasste auch stillgelegte Rechner**; ein nie abgeholter Auftrag wartete für immer. | Der Zeitplan überspringt Rechner, die länger als `skip_offline_days` (30) offline sind, sofern sie nicht namentlich im Plan stehen. Nicht abgeholte Backups gelten nach `queue_expire_hours` (24) als fehlgeschlagen. | `TestOfflineMachines` |
+| **JSON ohne Zeichensatz.** PowerShell 5 las Umlaute falsch. | `Content-Type: application/json; charset=utf-8`. | `TestJSONCharset` |
+
 ## Offen: Sicherheit
 
 - **Anmeldebremse hinter Reverse-Proxy.** Mit `-http` sehen alle Anfragen wie von der Proxy-Adresse aus. Vorschlag: `X-Forwarded-For` von einer konfigurierten Proxy-Adresse auswerten.
-- **AD-Suche ohne Zertifikatsprüfung.** `tlsInsecure` in `internal/server/rollout.go` wird für StartTLS zum Domänencontroller benutzt; das Passwort des Domänen-Admins ist für einen Angreifer im Netz abfangbar. Vorschlag: Zertifikat prüfen, optional eigene CA oder Fingerabdruck hinterlegen.
 - **Chunk-IDs sind reines SHA-256.** Jeder Agent darf jeden Chunk seines Speicherorts per ID laden. Wer den Hash einer Datei kennt, kann ihr Vorhandensein prüfen und sie herunterladen. Ein schlüsselabhängiger Hash (HMAC) wäre sauberer, ist aber ein Formatwechsel mit Migration.
 
 ## Offen: Stabilität
@@ -52,12 +63,10 @@ Verhaltensänderung: Ein neu installierter Rechner startet ohne alten Verlauf, b
 ## Offen: Performance
 
 - **Einsträngige Restore-Prüfung.** `runVerify` liest mit einem Worker.
-- **Eine Datei pro Chunk.** Skaliert schlecht bei Millionen Chunks und auf Netzwerkfreigaben; Packdateien nennt auch das README als offenen Punkt.
 
 ## Offen: größere Bauabschnitte
 
-- **Packdateien** statt einer Datei pro Chunk (Formatwechsel mit Migration).
 - **Replikation** in einen zweiten Speicherort als geplanter Auftrag.
 - **Zwei-Faktor-Anmeldung**, **Sperrfrist beim Löschen** von Backups, **Schutz von `repo.key`** (Passwort, DPAPI/TPM).
-- **Server-Sicherung als Stream**, Index der vorhandenen Chunks im Speicher, Vorgänger-Baum im Agent im Gleichschritt lesen statt komplett laden.
+- **Server-Sicherung als Stream**, Vorgänger-Baum im Agent im Gleichschritt lesen statt komplett laden.
 - **Code-Signatur** für Agent und Server.

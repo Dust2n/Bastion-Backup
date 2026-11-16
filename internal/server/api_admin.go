@@ -115,6 +115,15 @@ func (s *Server) adminRoutes(mux *http.ServeMux) {
 		writeJSON(w, map[string]string{"ok": "Integritätsprüfung gestartet"})
 	}))
 	mux.HandleFunc("GET /api/rescue-status", s.admin("viewer", s.handleRescueStatus))
+	mux.HandleFunc("POST /api/rescue/build", s.admin("admin", func(w http.ResponseWriter, r *http.Request, u *user) {
+		id, err := s.startRescueBuild(u.Name)
+		if err != nil {
+			httpErr(w, 409, "%v", err)
+			return
+		}
+		s.audit(u.Name, "rescue_build", "")
+		writeJSON(w, map[string]any{"job_id": id})
+	}))
 	mux.HandleFunc("GET /api/rescue/file/{name}", s.admin("operator", func(w http.ResponseWriter, r *http.Request, u *user) {
 		switch name := r.PathValue("name"); name {
 		case "bastion-rescue-winpe.iso", "bastion-rescue-linux.iso":
@@ -534,11 +543,25 @@ func (s *Server) handlePlanSave(w http.ResponseWriter, r *http.Request, u *user)
 
 func (s *Server) handlePlanMove(w http.ResponseWriter, r *http.Request, u *user) {
 	id := pathID(r)
-	if _, err := s.getPlan(id); err != nil {
-		httpErr(w, 404, "Plan nicht gefunden")
-		return
+	to := int64(0)
+	if id == 0 {
+		// backups without a plan: the target comes with the request
+		var req struct {
+			To int64 `json:"to"`
+		}
+		if err := readJSON(r, &req); err != nil || req.To == 0 {
+			httpErr(w, 400, "Ziel-Speicherort angeben")
+			return
+		}
+		to = req.To
+	} else {
+		if _, err := s.getPlan(id); err != nil {
+			httpErr(w, 404, "Plan nicht gefunden")
+			return
+		}
+		to = s.planStorage(id)
 	}
-	job, err := s.startMove(id, s.planStorage(id), u.Name)
+	job, err := s.startMove(id, to, u.Name)
 	if err != nil {
 		httpErr(w, 409, "%v", err)
 		return
@@ -996,7 +1019,9 @@ func (s *Server) handleInstallInfo(w http.ResponseWriter, r *http.Request, u *us
 var settingKeys = []string{"public_url", "max_parallel_backups", "bandwidth_kbps", "gc_time", "scrub_time",
 	"smtp_host", "smtp_port", "smtp_user", "smtp_from", "notify_to", "notify_failure", "notify_stale_days",
 	"pxe_enabled", "pxe_ip", "pxe_dhcp", "rollout_retry_minutes", "rollout_retry_hours", "verify_time", "verify_days",
-	"job_stall_minutes", "keep_jobs_days", "keep_audit_days", "monitor_token"}
+	"job_stall_minutes", "keep_jobs_days", "keep_audit_days", "monitor_token",
+	"skip_offline_days", "queue_expire_hours", "ldap_fingerprints", "ldap_insecure",
+	"auto_update_agents", "auto_rescue_build"}
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request, u *user) {
 	out := map[string]string{}
@@ -1116,6 +1141,9 @@ func (s *Server) handleRescueStatus(w http.ResponseWriter, r *http.Request, u *u
 		"wimboot":     exists("pxe", "wimboot"),
 		"pxe_enabled": s.setting("pxe_enabled", "") == "1" || s.opt.PXE,
 		"data_dir":    s.opt.DataDir,
+		"can_build":   s.canBuildRescue(),
+		"built":       json.RawMessage(s.setting("rescue_built", "null")),
+		"drivers":     dirExists(s.path("rescue", "drivers")),
 		"server":      s.PublicURL(),
 		"fingerprint": s.fp,
 	})

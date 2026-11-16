@@ -33,9 +33,16 @@ type storageRow struct {
 	Snapshots int    `json:"snapshots"`
 	Logical   int64  `json:"logical"`
 	Plans     int    `json:"plans"`
+	// Unplanned counts backups that belong to no plan (started by hand
+	// without one, or their plan was deleted). They do not follow a plan
+	// to another storage and are moved on their own.
+	Unplanned int    `json:"unplanned"`
 	Online    bool   `json:"online"`
 	Error     string `json:"error,omitempty"`
 }
+
+// unplannedSQL selects snapshots without an existing plan.
+const unplannedSQL = `(plan_id=0 OR plan_id NOT IN (SELECT id FROM plans))`
 
 type storageStats struct {
 	Chunks int64 `json:"chunks"`
@@ -138,6 +145,23 @@ func (s *Server) snapStore(snapID string) (*repo.Store, error) {
 	return s.storeByID(s.snapStorage(snapID))
 }
 
+// flushStores makes what has been uploaded so far durable. Backups are
+// flushed when they are committed; this bounds what a power failure can
+// take from a long upload that is still running.
+func (s *Server) flushStores() {
+	s.storeMu.Lock()
+	list := make([]*repo.Store, 0, len(s.stores))
+	for _, st := range s.stores {
+		list = append(list, st)
+	}
+	s.storeMu.Unlock()
+	for _, st := range list {
+		if err := st.Flush(); err != nil {
+			s.log.Printf("Speicherort %s: %v", st.Dir(), err)
+		}
+	}
+}
+
 func (s *Server) setAgentStore(agentID string, storage int64) {
 	s.storeMu.Lock()
 	s.agentStore[agentID] = storage
@@ -202,6 +226,7 @@ func (s *Server) handleStorages(w http.ResponseWriter, r *http.Request, u *user)
 			q = `SELECT COUNT(*) FROM plans WHERE storage_id=? OR storage_id=0`
 		}
 		s.db.QueryRow(q, id).Scan(&row.Plans)
+		s.db.QueryRow(`SELECT COUNT(*) FROM snapshots WHERE storage_id=? AND deleted=0 AND `+unplannedSQL, id).Scan(&row.Unplanned)
 		out = append(out, row)
 	}
 	writeJSON(w, out)

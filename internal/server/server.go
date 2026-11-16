@@ -267,6 +267,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	go s.scheduler(ctx)
 	s.bg("Start", func() {
+		s.afterVersionChange()
 		s.importNewerSnapshots()
 		s.updateRepoStats()
 		s.indexMissing()
@@ -292,6 +293,7 @@ func (s *Server) Run(ctx context.Context) error {
 		if plain != nil {
 			plain.Shutdown(sctx)
 		}
+		s.flushStores()
 	}()
 	s.log.Printf("Bastion-Server läuft auf %s", s.PublicURL())
 	s.log.Printf("Zertifikats-Fingerabdruck: %s", s.fp)
@@ -312,7 +314,7 @@ func (d discardTLSNoise) Write(p []byte) (int, error) {
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	json.NewEncoder(w).Encode(v)
 }

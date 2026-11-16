@@ -98,7 +98,7 @@ export function dur(sec) {
 export const statusText = { queued: 'geplant', running: 'läuft', waiting: 'wartet', success: 'erfolgreich', failed: 'fehlgeschlagen', canceled: 'abgebrochen', done: 'fertig' };
 const statusClass = { success: 'ok', done: 'ok', failed: 'bad', canceled: 'warn', running: 'info', waiting: 'info', queued: '' };
 export function badge(st, text) { return h('span', { class: 'badge ' + (statusClass[st] ?? st ?? '') }, text || statusText[st] || st || '–'); }
-export const jobText = { backup: 'Backup', restore_files: 'Datei-Wiederherstellung', restore_image: 'Image-Wiederherstellung', update: 'Agent-Update', uninstall: 'Deinstallation', storage_move: 'Backups verschieben', verify: 'Restore-Prüfung' };
+export const jobText = { backup: 'Backup', restore_files: 'Datei-Wiederherstellung', restore_image: 'Image-Wiederherstellung', update: 'Agent-Update', uninstall: 'Deinstallation', storage_move: 'Backups verschieben', rescue_build: 'Rettungssystem bauen', verify: 'Restore-Prüfung' };
 export const osText = (os) => os === 'windows' ? 'Windows' : os === 'linux' ? 'Linux' : (os || '?');
 const ranks = { viewer: 1, operator: 2, admin: 3 };
 export const can = (role) => (ranks[state.me?.role] || 0) >= ranks[role];

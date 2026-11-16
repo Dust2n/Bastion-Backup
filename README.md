@@ -212,7 +212,8 @@ Die genauen Befehle mit Ihrer Server-Adresse und Ihrem Fingerabdruck zeigt die S
   - MBR-Datenträger mit mehr als 4 Partitionen (erweiterte Partitionen) werden bei der Image-Wiederherstellung nicht unterstützt.
   - Software-RAID (mdadm) wird nicht nachgebaut.
   - Ohne LVM- oder btrfs-Snapshot läuft die Sicherung ohne Snapshot; Bastion gibt dazu eine Warnung aus.
-- Bei sehr vielen Rechnern (> 200) oder Repositorys im zweistelligen TB-Bereich sollten Packdateien und eine externe Datenbank ergänzt werden.
+- Der Server hält das Verzeichnis aller Chunks im Arbeitsspeicher (rund 100 Byte je Chunk). Bei sehr vielen Rechnern (> 200) sollte eine externe Datenbank ergänzt werden.
+- Ab 0.4.0 liegen Chunks in Packdateien. Ältere Repositorys werden weiter gelesen und bei der Bereinigung umgestellt; ein Zurück auf 0.3.x ist danach nicht möglich.
 
 ## Entwicklung
 

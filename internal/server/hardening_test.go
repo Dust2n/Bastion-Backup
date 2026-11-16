@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 	"time"
 
@@ -134,13 +133,7 @@ func TestScrubQuarantine(t *testing.T) {
 	addSnapshot(t, s, "snap1", 1, s.defaultStorage(), []byte("wichtige Daten"))
 	st, _ := s.storeByID(0)
 	fid := repo.Hash([]byte("wichtige Daten"))
-	p := st.Dir() + "/chunks/" + fid.String()[:2] + "/" + fid.String()[2:4] + "/" + fid.String()
-	b, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	b[len(b)-1] ^= 0xff
-	os.WriteFile(p, b, 0o600)
+	damageChunk(t, st, fid)
 
 	s.runScrub("test")
 	if st.Has(fid) {

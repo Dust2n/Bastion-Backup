@@ -132,6 +132,9 @@ Seite **Agent-Verteilung**.
 ### Automatisch (Push)
 1. **Zugangsdaten** anlegen: Windows (Domänen-Admin oder lokaler Admin) bzw. Linux (SSH mit Passwort oder Schlüssel).
 2. **Rechner finden:** Active Directory (Domänencontroller, optional OU als Basis-DN) oder IP-Bereich (bis /20).
+   - Die AD-Suche meldet sich mit einem Domänenkonto an. Das Passwort geht nur über eine verschlüsselte Verbindung (StartTLS) an einen Domänencontroller, dessen Zertifikat geprüft ist: entweder kennt Windows bzw. das Betriebssystem des Servers die ausstellende CA, oder der SHA-256-Fingerabdruck des Zertifikats steht in den Einstellungen unter **„AD: vertraute Zertifikate“**.
+   - Ist das Zertifikat unbekannt, bricht die Suche ab, **ohne das Passwort zu senden**, und nennt den Fingerabdruck des vorgelegten Zertifikats. Diesen am Domänencontroller gegenprüfen (`certutil -store My` bzw. Zertifikat-Snap-In) und eintragen.
+   - `ldap_insecure = 1` schaltet die Prüfung ab (verschlüsselt, aber ohne Echtheitsprüfung wie bis 0.3.2). Nicht empfohlen.
 3. Rechner auswählen.
 4. **„Vorab prüfen“** – zeigt je Rechner ✓/✗ für:
    - Namensauflösung, offene Ports (SMB 445, WinRM 5985, SSH 22)
@@ -190,12 +193,25 @@ Jeder Plan wählt seinen Speicherort. Deduplizierung gilt **je Speicherort**.
 Inhalt eines Speicherorts:
 ```
 <Speicherort>\
-  xx\xxxxxxxx…          Chunks (verschlüsselt)
+  packs\xx\*.pack       Packdateien: viele Chunks (verschlüsselt) je Datei, etwa 64 MB
+  packs\xx\*.idx        Verzeichnis der Chunks eines Packs
+  chunks\xx\xx\…        Chunks im Format bis 0.3.2 (eine Datei pro Chunk), siehe unten
+  quarantine\           beschädigte Chunks aus der Integritätsprüfung
   snapshots\*.json      Beschreibungen der Backups
   server-backup\*.bsb   Server-Sicherungen (siehe Kapitel 11)
 ```
 
-**Verschieben:** Wird der Speicherort eines Plans geändert, bietet Bastion an, vorhandene Backups zu verschieben. Daten werden kopiert, im Ziel geprüft und erst dann umgestellt; den alten Platz gibt die nächste Bereinigung frei.
+**Packdateien (ab 0.4.0).** Bis 0.3.2 lag jeder Chunk in einer eigenen Datei. Das bedeutete pro Chunk ein Anlegen, ein Schreiben auf die Platte und ein Umbenennen sowie Hunderttausende kleiner Dateien, was besonders auf Netzwerkfreigaben bremst. Jetzt werden Chunks an Packdateien angehängt:
+
+- Welche Chunks vorhanden sind, beantwortet der Server aus dem Arbeitsspeicher (rund 100 Byte je Chunk) statt mit einer Dateiabfrage.
+- Auf die Platte gezwungen wird, bevor ein Backup angenommen wird, und zusätzlich alle 30 Sekunden. Ein angenommenes Backup verweist nie auf Daten, die ein Stromausfall noch nehmen könnte.
+- Ein Pack beschreibt sich selbst. Fehlt sein Verzeichnis (`.idx`) oder wurde der Server beim Schreiben unterbrochen, liest er das Pack beim Start Satz für Satz, prüft jeden Chunk und schneidet einen unvollständigen Rest ab.
+
+**Umstieg von 0.3.2.** Es ist nichts zu tun: Vorhandene Einzeldateien werden weiter gelesen und zur Deduplizierung genutzt. Die tägliche Bereinigung übernimmt sie in Packs und löscht die Einzeldateien, jeweils erst nachdem die Kopie sicher auf der Platte liegt. Der zusätzliche Platzbedarf dabei liegt bei einem Pack. **Ein Zurück auf 0.3.2 ist danach nicht mehr möglich**, weil ältere Versionen Packs nicht lesen.
+
+**Bereinigung mit Packs.** Ein Pack ohne benötigten Chunk wird gelöscht. Ein Pack, das zu mehr als 30 % aus nicht mehr benötigten Chunks besteht, wird umgepackt. Einzelne nicht mehr benötigte Chunks in einem sonst gebrauchten Pack bleiben bis dahin liegen; der freigegebene Platz kann deshalb etwas später erscheinen als früher.
+
+**Verschieben:** Wird der Speicherort eines Plans geändert, bietet Bastion an, vorhandene Backups zu verschieben. Backups, die zu keinem Plan gehören (von Hand ohne Plan gestartet oder Plan gelöscht), folgen keinem Plan; sie lassen sich auf der Seite Speicherorte mit **„Backups ohne Plan hierher“** verschieben. Daten werden kopiert, im Ziel geprüft und erst dann umgestellt; den alten Platz gibt die nächste Bereinigung frei.
 
 **Empfehlung:** Mindestens einen Speicherort auf einem **anderen Gerät** als dem Server betreiben.
 
@@ -283,6 +299,7 @@ Rechner → Backup → **„Image wiederherstellen“**.
 
 - WinPE braucht Windows ADK + WinPE-Add-on. Die Befehle mit eingesetzter Adresse und Fingerabdruck zeigt die Seite **Rettungssysteme**.
 - **Nach jedem Agent-Update das WinPE neu bauen**, damit Rettungsprogramm und Agent zusammenpassen.
+- **Bauen auf dem Server:** Ist auf dem (Windows-)Server das ADK mit WinPE-Add-on installiert, baut die Seite **Rettungssysteme** das WinPE per Knopf („Auf dem Server neu bauen“) als Auftrag mit Protokoll. Nach einem Server-Update geschieht das automatisch, wenn bereits ein WinPE vorhanden ist (Einstellung `auto_rescue_build`). Zusätzliche Treiber (z. B. VirtIO für virtuelle Maschinen) aus `<data>\rescue\drivers` werden eingebunden. Die vorhandenen Dateien werden erst nach einem vollständigen Bau ersetzt.
 - Warnungen „Optionale WinPE-Pakete nicht hinzugefügt“ sind unkritisch.
 
 ### Bedienung
@@ -403,6 +420,12 @@ Den Ablauf regelmäßig auf einer Test-VM durchspielen: `restore` in ein leeres 
 | `keep_jobs_days` | 180 | abgeschlossene Aufträge samt Protokoll löschen; 0 = nie |
 | `keep_audit_days` | 730 | Audit-Protokoll löschen; 0 = nie |
 | `monitor_token` | leer | Token für `GET /api/monitor` (mindestens 16 Zeichen); leer = Endpunkt aus |
+| `skip_offline_days` | 30 | Zeitplan überspringt Rechner, die so lange offline sind (nur bei Ziel „alle“ oder Gruppe); 0 = nie |
+| `queue_expire_hours` | 24 | nicht abgeholtes geplantes Backup gilt danach als fehlgeschlagen; 0 = nie |
+| `ldap_fingerprints` | leer | vertraute Zertifikate von Domänencontrollern (SHA-256, durch Leerzeichen getrennt) |
+| `ldap_insecure` | 0 | 1 = AD-Suche ohne Zertifikatsprüfung |
+| `auto_update_agents` | 0 | 1 = nach einem Server-Update erhalten alle Agents die neue Version |
+| `auto_rescue_build` | 1 | nach einem Server-Update ein vorhandenes WinPE-Rettungssystem neu bauen; 0 = aus |
 | `gc_time` | 03:30 | tägliche Bereinigung (nicht mehr benötigte Chunks löschen) |
 | `scrub_time` | aus | tägliche Integritätsprüfung aller Chunks |
 | `verify_time` | 04:30 | Uhrzeit der automatischen Restore-Prüfung |
@@ -423,6 +446,7 @@ Den Ablauf regelmäßig auf einer Test-VM durchspielen: `restore` in ein leeres 
 bastion-server [-data DIR] [-listen :8443] [-http 127.0.0.1:8080] [-pxe]
 bastion-server -install-service -data DIR [-listen :8443]
 bastion-server restore -from <Datei|Ordner> [-data DIR] [-force]
+bastion-server update -from <Release-Ordner> [-data DIR] [-exe PROGRAMM] [-no-restart]
 bastion-server -version
 ```
 
@@ -479,16 +503,22 @@ Agent-Dateien:
 
 **Server aktualisieren**
 ```powershell
-.\build.ps1 -Version x.y.z -Publish C:\BastionData
-Stop-Service BastionServer
-Copy-Item .\dist\windows-amd64\bastion-server.exe 'C:\Program Files\BastionServer\' -Force
-Start-Service BastionServer
+.\build.ps1 -Version x.y.z
+.\dist\windows-amd64\bastion-server.exe update -from .\dist
 ```
-Datenbank-Änderungen werden beim Start automatisch nachgezogen.
+`update` nimmt den Ordner aus `build.ps1` oder ein entpacktes Release-Archiv und erledigt alles in einem Schritt:
 
-**Agents aktualisieren:** Rechner → „Alle aktualisieren“ (oder je Rechner im ⋯-Menü).
+1. Agent-Pakete aller Plattformen nach `<data>\agents` (der Server bietet sie danach zum Update an)
+2. Rettungsskripte und Dokumentation neben das Server-Programm
+3. Server-Programm ersetzen; das alte bleibt als `bastion-server.exe.old` daneben liegen (Rückweg)
+4. Dienst neu starten und warten, bis er läuft
 
-**WinPE neu bauen** nach Agent-Updates (Seite Rettungssysteme zeigt den Befehl).
+Programm und Datenverzeichnis liest der Befehl aus dem eingerichteten Dienst. Datenbank-Änderungen werden beim Start automatisch nachgezogen. Nach dem Start in einer neuen Version
+
+- baut der Server ein vorhandenes WinPE-Rettungssystem neu (Einstellung `auto_rescue_build`, Standard an),
+- aktualisiert er die Agents, wenn `auto_update_agents` auf 1 steht (Standard aus).
+
+**Agents von Hand aktualisieren:** Rechner → „Alle aktualisieren“ (oder je Rechner im ⋯-Menü).
 
 **Regelmäßig:**
 - Status der Server-Sicherung in den Einstellungen ansehen
@@ -530,7 +560,7 @@ Protokolle:
 - **Linux:** keine erweiterten MBR-Partitionen, kein mdadm-RAID.
 - **Speicherorte:** lokal und SMB; kein S3 / unveränderlicher Speicher.
 - **Restore-Prüfung** prüft Daten und Startdateien, bootet das System aber nicht tatsächlich.
-- Sehr große Umgebungen (> 200 Rechner, zweistellige TB) brauchen Packdateien und eine externe Datenbank.
+- Der Server hält das Verzeichnis aller Chunks im Arbeitsspeicher (rund 100 Byte je Chunk, also etwa 1 GB je 10 TB Repository bei 1 MB mittlerer Chunk-Größe). Sehr große Umgebungen (> 200 Rechner) brauchen außerdem eine externe Datenbank.
 
 ---
 

@@ -15,7 +15,8 @@ import (
 const jobStorageMove = "storage_move"
 
 // startMove moves the existing backups of a plan to another storage. It
-// runs on the server and shows up as a normal job.
+// runs on the server and shows up as a normal job. Plan 0 stands for the
+// backups without a plan (see unplannedSQL).
 func (s *Server) startMove(planID, to int64, by string) (int64, error) {
 	if _, err := s.storeByID(to); err != nil {
 		return 0, err
@@ -38,6 +39,15 @@ func (s *Server) startMove(planID, to int64, by string) (int64, error) {
 	id, _ := res.LastInsertId()
 	s.bg("runMove", func() { s.runMove(id, planID, to) })
 	return id, nil
+}
+
+// planFilter is the SQL condition for the snapshots (or jobs) of a plan;
+// it takes the plan ID as its one parameter.
+func planFilter(planID int64) string {
+	if planID == 0 {
+		return `(?=0 AND ` + unplannedSQL + `)`
+	}
+	return `plan_id=?`
 }
 
 func (s *Server) moveCanceled(job int64) bool {
@@ -67,7 +77,7 @@ func (s *Server) runMove(job, planID, to int64) {
 	// new backups of the plan are held back (s.moving); wait for running ones
 	for i := 0; ; i++ {
 		var n int
-		s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE type='backup' AND status='running' AND plan_id=?`, planID).Scan(&n)
+		s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE type='backup' AND status='running' AND `+planFilter(planID), planID).Scan(&n)
 		if n == 0 {
 			break
 		}
@@ -91,7 +101,7 @@ func (s *Server) runMove(job, planID, to int64) {
 		id, data string
 		from     int64
 	}
-	rows, err := s.db.Query(`SELECT id,data,storage_id FROM snapshots WHERE plan_id=? AND deleted=0 AND storage_id<>? ORDER BY time`, planID, to)
+	rows, err := s.db.Query(`SELECT id,data,storage_id FROM snapshots WHERE `+planFilter(planID)+` AND deleted=0 AND storage_id<>? ORDER BY time`, planID, to)
 	if err != nil {
 		finish("failed", err.Error())
 		return
@@ -154,7 +164,11 @@ func (s *Server) runMove(job, planID, to int64) {
 				s.publishJob(job)
 			}
 		}
-		// all chunks are in place and verified: switch the snapshot over
+		if err := dst.Flush(); err != nil {
+			finish("failed", fmt.Sprintf("Ziel-Speicherort: %v", err))
+			return
+		}
+		// all chunks are in place, verified and on disk: switch the snapshot over
 		os.MkdirAll(filepath.Join(dst.Dir(), "snapshots"), 0o700)
 		os.WriteFile(filepath.Join(dst.Dir(), "snapshots", x.id+".json"), []byte(x.data), 0o600)
 		s.db.Exec(`UPDATE snapshots SET storage_id=? WHERE id=?`, to, x.id)

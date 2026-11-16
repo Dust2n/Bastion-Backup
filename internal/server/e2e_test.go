@@ -119,15 +119,7 @@ func TestBackupRestoreEndToEnd(t *testing.T) {
 		t.Fatal("kein Backup gespeichert")
 	}
 	st, _ := s.storeByID(0)
-	chunks := func() (n int) {
-		filepath.WalkDir(filepath.Join(st.Dir(), "chunks"), func(_ string, d fs.DirEntry, _ error) error {
-			if d != nil && !d.IsDir() {
-				n++
-			}
-			return nil
-		})
-		return
-	}
+	chunks := func() int { return chunkCount(st) }
 	first := chunks()
 
 	// change one file, add one: the second backup must only add little

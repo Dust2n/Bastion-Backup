@@ -124,12 +124,14 @@ export async function pageStorages() {
         meter(s.total - s.free, s.total, `${bytes(s.free)} von ${bytes(s.total)} frei`),
         h('dl', { class: 'kv small' },
           h('dt', {}, 'Belegt durch Bastion'), h('dd', {}, bytes(s.used), s.logical ? h('span', { class: 'muted' }, ` (Inhalt ${bytes(s.logical)}${s.used ? ', Faktor ' + (s.logical / s.used).toFixed(1).replace('.', ',') : ''})`) : null),
-          h('dt', {}, 'Backups'), h('dd', {}, num(s.snapshots)),
+          h('dt', {}, 'Backups'), h('dd', {}, num(s.snapshots), s.unplanned ? h('span', { class: 'muted' }, ` (${num(s.unplanned)} ohne Plan)`) : null),
           h('dt', {}, 'Pläne'), h('dd', {}, num(s.plans))))
         : h('div', { class: 'callout bad' }, icon('alert'), s.error || 'nicht erreichbar'),
       can('admin') ? h('div', { class: 'actions' },
         !s.is_default && s.online ? h('button', { class: 'btn small', onclick: () => act(() => api('PUT', '/api/storages/' + s.id, { is_default: true }), 'Neuer Standard-Speicherort') }, 'Als Standard') : null,
         h('button', { class: 'btn small', onclick: () => renameDialog(s) }, 'Umbenennen'),
+        s.online && list.some((o) => o.id !== s.id && o.unplanned > 0) ? h('button', { class: 'btn small', title: 'Backups, die zu keinem Plan gehören (von Hand gestartet oder Plan gelöscht)',
+          onclick: () => confirmBox('Backups ohne Plan verschieben', `${num(list.filter((o) => o.id !== s.id).reduce((n, o) => n + o.unplanned, 0))} Backups ohne Plan werden nach „${s.name}“ verschoben und dort geprüft. Der alte Speicherort wird bei der nächsten Bereinigung freigegeben.`, 'Verschieben', () => api('POST', '/api/plans/0/move', { to: s.id })) }, 'Backups ohne Plan hierher') : null,
         !s.is_default ? h('button', { class: 'btn small danger-o', disabled: s.snapshots > 0 || s.plans > 0, title: s.snapshots || s.plans ? 'Erst Pläne umstellen und Backups verschieben' : '', onclick: () => confirmBox('Speicherort entfernen', `„${s.name}“ wird aus Bastion entfernt. Die Dateien im Ordner bleiben unangetastet.`, 'Entfernen', () => api('DELETE', '/api/storages/' + s.id), true) }, icon('trash')) : null) : null))),
     h('div', { class: 'callout' }, icon('shield'), h('div', {}, 'Alle Speicherorte sind verschlüsselt (AES-256). Gleiche Daten werden innerhalb eines Speicherorts nur einmal abgelegt. Um vorhandene Backups umzuziehen, im Backup-Plan einen anderen Speicherort wählen.')));
 }

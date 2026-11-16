@@ -106,7 +106,7 @@ func openDB(path string) (*sql.DB, error) {
 	// rollouts interrupted by a server restart are retried
 	db.Exec(`UPDATE rollouts SET status='waiting',message='Server wurde neu gestartet, neuer Versuch',next_try=0 WHERE status IN ('queued','running')`)
 	// server-side jobs do not survive a restart
-	db.Exec(`UPDATE jobs SET status='failed',message='Server wurde neu gestartet',finished=? WHERE type='verify' AND status='running'`, time.Now().Unix())
+	db.Exec(`UPDATE jobs SET status='failed',message='Server wurde neu gestartet',finished=? WHERE type IN ('verify','rescue_build') AND status='running'`, time.Now().Unix())
 	return db, nil
 }
 

@@ -1,5 +1,5 @@
 // Agent-Verteilung, Rettungssysteme und Einstellungen.
-import { h, api, icon, bytes, dt, badge, can, state, toast, act, table, copyBox, formData, field, pageHead, card, onPage, modal, closeModal } from './lib.js';
+import { h, api, icon, bytes, dt, badge, can, state, toast, act, table, copyBox, formData, field, pageHead, card, onPage, modal, closeModal, confirmBox } from './lib.js';
 
 // ---------- Agent-Verteilung ----------
 const rollout = { hosts: [], sel: new Set() };
@@ -147,7 +147,11 @@ export async function pageRescue() {
       card('Windows (WinPE)',
         h('dl', { class: 'kv' }, h('dt', {}, 'WinPE-Image'), h('dd', {}, ok(r.winpe)), h('dt', {}, 'Boot-ISO'), h('dd', {}, ok(r.winpe_iso))),
         r.winpe_iso ? h('a', { class: 'btn primary', href: '/api/rescue/file/bastion-rescue-winpe.iso' }, icon('download'), 'ISO herunterladen') : null,
-        h('p', { class: 'small' }, 'Neu erstellen auf einem Windows-PC mit Windows ADK und WinPE-Add-on (PowerShell als Administrator):'),
+        r.built ? h('p', { class: 'small muted' }, `Zuletzt auf dem Server gebaut: ${dt(r.built.time)} mit Agent ${r.built.agent}`) : null,
+        r.can_build && can('admin') ? h('div', {},
+          h('button', { class: 'btn', onclick: () => confirmBox('Rettungssystem bauen', 'Der Server baut winpe.wim und die Boot-ISO mit dem aktuell bereitgestellten Agent neu (einige Minuten). Die vorhandenen Dateien bleiben bis zum Erfolg bestehen.', 'Bauen', async () => { const j = await api('POST', '/api/rescue/build'); location.hash = '#/jobs/' + j.job_id; }) }, icon('refresh'), 'Auf dem Server neu bauen'),
+          h('p', { class: 'small muted' }, r.drivers ? `Treiber aus ${data}\\rescue\\drivers werden eingebunden.` : `Zusätzliche Treiber (z. B. VirtIO) in ${data}\\rescue\\drivers ablegen, damit sie eingebunden werden.`)) : null,
+        h('p', { class: 'small' }, 'Oder von Hand auf einem Windows-PC mit Windows ADK und WinPE-Add-on (PowerShell als Administrator):'),
         copyBox(`.\\rescue\\winpe\\build.ps1 -Server ${r.server} -Fingerprint ${r.fingerprint} -Agent .\\dist\\windows-amd64\\bastion-agent.exe -Out "${data}\\rescue"`),
         h('p', { class: 'small muted' }, 'USB-Stick: ISO z. B. mit Rufus schreiben.')),
       card('Linux',
@@ -187,6 +191,11 @@ export async function pageSettings() {
         f('rollout_retry_hours', 'Agent-Verteilung: Versuche über (Stunden)', { type: 'number', placeholder: '24' }, '0 = nicht wiederholen'),
         f('verify_time', 'Restore-Prüfung um', { placeholder: '04:30' }, 'jeweils das neueste Backup jedes Rechners'),
         f('verify_days', 'Restore-Prüfung alle (Tage)', { type: 'number', placeholder: '7' }, '0 = aus'),
+        f('skip_offline_days', 'Zeitplan: Rechner überspringen nach (Tagen offline)', { type: 'number', placeholder: '30' }, 'gilt für Ziele „alle“ und Gruppen; 0 = nie'),
+        f('queue_expire_hours', 'Nicht abgeholtes Backup verwerfen nach (Std.)', { type: 'number', placeholder: '24' }, '0 = nie'),
+        f('ldap_fingerprints', 'AD: vertraute Zertifikate', { placeholder: 'SHA-256-Fingerabdrücke, durch Leerzeichen getrennt' }, 'für die AD-Suche, wenn das Zertifikat des Domänencontrollers von einer internen CA stammt'),
+        f('auto_update_agents', 'Nach Server-Update Agents aktualisieren', { placeholder: '0' }, '1 = alle Agents erhalten nach einem Server-Update automatisch die neue Version'),
+        f('auto_rescue_build', 'Nach Server-Update Rettungssystem neu bauen', { placeholder: '1' }, '0 = aus; gilt nur, wenn bereits ein WinPE-Rettungssystem vorhanden ist'),
         f('monitor_token', 'Monitoring-Token', { placeholder: 'leer = aus' }, 'mind. 16 Zeichen; GET /api/monitor mit „Authorization: Bearer monitor:<Token>“')),
       h('p', { class: 'small muted' }, 'Zertifikat SHA-256: ', h('span', { class: 'mono' }, s.fingerprint), ` · Daten: ${s.data_dir}`)),
     card('E-Mail-Benachrichtigung',
