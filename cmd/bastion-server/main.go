@@ -71,9 +71,10 @@ func update(args []string) {
 	data := fs.String("data", "", "Datenverzeichnis (Standard: das des eingerichteten Dienstes)")
 	exe := fs.String("exe", "", "installiertes Server-Programm (Standard: das des eingerichteten Dienstes)")
 	noRestart := fs.Bool("no-restart", false, "Dienst nicht neu starten")
+	force := fs.Bool("force", false, "auch eine Installation aus dem Debian-Paket überschreiben")
 	fs.Parse(args)
 	if *from == "" {
-		fmt.Fprintln(os.Stderr, "Verwendung: bastion-server update -from <Release-Ordner> [-data <Datenverzeichnis>] [-exe <Programm>] [-no-restart]")
+		fmt.Fprintln(os.Stderr, "Verwendung: bastion-server update -from <Release-Ordner> [-data <Datenverzeichnis>] [-exe <Programm>] [-no-restart] [-force]")
 		os.Exit(2)
 	}
 	svcExe, svcData, haveSvc := installedService()
@@ -82,6 +83,12 @@ func update(args []string) {
 	}
 	if *exe == "" {
 		*exe, _ = os.Executable()
+	}
+	if packageManaged(*exe) && !*force {
+		fmt.Fprintf(os.Stderr, "Fehler: %s stammt aus dem Debian-Paket bastion-server.\n", *exe)
+		fmt.Fprintln(os.Stderr, "Update mit dem neuen Paket: sudo apt install ./bastion-server_<Version>_<Architektur>.deb")
+		fmt.Fprintln(os.Stderr, "(-force überschreibt trotzdem; dpkg weiß dann nichts von den geänderten Dateien.)")
+		os.Exit(1)
 	}
 	if *data == "" {
 		*data = svcData

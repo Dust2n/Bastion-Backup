@@ -1,0 +1,4 @@
+# Shell-Skripte, systemd-Unit und Maintainer-Skripte laufen auf Linux:
+# immer mit LF auschecken, auch unter Windows (core.autocrlf).
+*.sh text eol=lf
+packaging/deb/** text eol=lf

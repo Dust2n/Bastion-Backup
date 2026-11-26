@@ -40,3 +40,45 @@ jobs:
           go-version-file: go.mod
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: govulncheck ./...
+
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Programme bauen
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for t in linux/amd64 linux/arm64 windows/amd64; do
+            os=${t%/*}; arch=${t#*/}; dir=dist/$os-$arch; ext=""
+            [ $os = windows ] && ext=.exe
+            mkdir -p $dir
+            GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X bastion/internal/proto.Version=0.0.1" -o $dir/bastion-agent$ext ./cmd/bastion-agent
+            GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X bastion/internal/proto.Version=0.0.1" -o $dir/bastion-server$ext ./cmd/bastion-server
+            echo 0.0.1 > $dir/VERSION
+          done
+      - name: Pakete bauen
+        run: |
+          go run ./tools/mkdeb -version 0.0.1 -arch amd64 -dist dist -out out
+          go run ./tools/mkdeb -version 0.0.1 -arch arm64 -dist dist -out out
+          dpkg-deb --info out/bastion-server_0.0.1_amd64.deb
+          dpkg-deb --contents out/bastion-server_0.0.1_amd64.deb
+      - name: lintian (nur Hinweise)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq lintian >/dev/null
+          lintian --no-tag-display-limit out/bastion-server_0.0.1_amd64.deb || true
+      - name: Installieren, Dienst prüfen, entfernen
+        run: |
+          sudo apt-get install -y ./out/bastion-server_0.0.1_amd64.deb
+          systemctl is-active bastion-server
+          for i in $(seq 1 20); do curl -ksf https://localhost:8443/ >/dev/null && break; sleep 1; done
+          curl -ksf https://localhost:8443/ >/dev/null
+          sudo test -f /var/lib/bastion-server/agents/windows-amd64/bastion-agent.exe
+          sudo test -f /var/lib/bastion-server/initial-admin-password.txt
+          test "$(sudo stat -c %a /var/lib/bastion-server)" = 700
+          sudo apt-get purge -y bastion-server
+          if systemctl is-active --quiet bastion-server; then echo "Dienst läuft noch"; exit 1; fi
+          sudo test -f /var/lib/bastion-server/bastion.db

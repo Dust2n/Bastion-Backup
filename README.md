@@ -74,6 +74,14 @@ Ergebnis in `dist\<os>-<arch>\`: `bastion-server(.exe)`, `bastion-agent(.exe)` u
 sudo ./bastion-server -install-service -data /var/lib/bastion-server -listen :8443
 ```
 
+**Debian/Ubuntu (Paket aus dem Release, amd64 oder arm64):**
+
+```bash
+sudo apt install ./bastion-server_0.1.0_amd64.deb
+```
+
+Das Paket installiert den Server nach `/opt/bastion-server`, legt `/var/lib/bastion-server` an (nur root), stellt die Agent-Programme bereit, startet den systemd-Dienst `bastion-server` und zeigt die Zugangsdaten für die erste Anmeldung an. Port, Datenverzeichnis und weitere Optionen stehen in `/etc/default/bastion-server` (danach `sudo systemctl restart bastion-server`). Update: das neue Paket genauso installieren. `apt remove`/`purge` lässt das Datenverzeichnis stehen.
+
 - Beim ersten Start legt der Server den Benutzer `admin` an. Das Passwort steht in `<data>\initial-admin-password.txt`.
 - Weboberfläche: `https://<server>:8443`. Das selbstsignierte Zertifikat wird angezeigt; Agents prüfen es über den Fingerabdruck.
 - Unter **Einstellungen** die Server-Adresse eintragen, unter der die Rechner den Server erreichen (z. B. `https://backup01.firma.local:8443`).

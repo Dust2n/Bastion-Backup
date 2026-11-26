@@ -1,0 +1,14 @@
+#!/bin/sh
+# prerm für bastion-server: Dienst vor dem Entfernen beenden.
+set -e
+
+case "$1" in
+remove)
+	if [ -d /run/systemd/system ]; then
+		systemctl stop bastion-server.service || true
+	fi
+	systemctl disable bastion-server.service >/dev/null 2>&1 || true
+	;;
+esac
+
+exit 0

@@ -1,0 +1,20 @@
+#!/bin/sh
+# postrm für bastion-server. Das Datenverzeichnis bleibt immer erhalten:
+# es enthält Datenbank, Schlüssel und Backups.
+set -e
+
+case "$1" in
+remove)
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload || true
+	fi
+	;;
+purge)
+	DATA=/var/lib/bastion-server
+	echo "Das Datenverzeichnis wurde nicht gelöscht (Standard: $DATA)."
+	echo "Es enthält Datenbank, Schlüssel und Backups. Bei Bedarf von Hand löschen -"
+	echo "ohne den Ordner keys sind die Backups nicht mehr lesbar."
+	;;
+esac
+
+exit 0

@@ -135,3 +135,6 @@ func restartService() error {
 		time.Sleep(500 * time.Millisecond)
 	}
 }
+
+// packageManaged: there are no system packages on Windows.
+func packageManaged(string) bool { return false }

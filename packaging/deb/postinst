@@ -1,0 +1,98 @@
+#!/bin/sh
+# postinst für bastion-server: Datenverzeichnis anlegen, Agents bereitstellen,
+# Dienst einrichten bzw. neu starten.
+set -e
+
+APP=/opt/bastion-server
+HANDUNIT=/etc/systemd/system/bastion-server.service
+
+BASTION_DATA=/var/lib/bastion-server
+BASTION_OPTS="-listen :8443"
+if [ -r /etc/default/bastion-server ]; then
+	. /etc/default/bastion-server
+fi
+DATA=$BASTION_DATA
+
+# Eine von Hand eingerichtete Unit (bastion-server -install-service) hat
+# Vorrang vor der des Pakets, systemd verwendet dann sie.
+if [ -r "$HANDUNIT" ]; then
+	d=$(sed -n 's/^ExecStart=.* -data \([^ ]*\).*/\1/p' "$HANDUNIT" | head -n 1)
+	case "$d" in
+	/*) DATA=$d ;;
+	esac
+fi
+
+publish_agents() {
+	for src in "$APP"/agents/*/; do
+		[ -d "$src" ] || continue
+		plat=$(basename "$src")
+		mkdir -p "$DATA/agents/$plat"
+		for f in "$src"*; do
+			[ -f "$f" ] || continue
+			name=$(basename "$f")
+			# atomar ersetzen: der laufende Server liefert die Dateien aus
+			cp "$f" "$DATA/agents/$plat/.$name.tmp"
+			mv -f "$DATA/agents/$plat/.$name.tmp" "$DATA/agents/$plat/$name"
+		done
+	done
+}
+
+case "$1" in
+configure)
+	mkdir -p "$DATA"
+	# dort liegen repo.key, Datenbank und TLS-Schlüssel: nur root
+	chown root:root "$DATA"
+	chmod 0700 "$DATA"
+	publish_agents
+
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload || true
+		if [ -z "$2" ]; then
+			systemctl enable --now bastion-server.service || true
+		else
+			systemctl enable bastion-server.service >/dev/null 2>&1 || true
+			systemctl restart bastion-server.service || true
+		fi
+	fi
+
+	if [ -r "$HANDUNIT" ] && ! grep -q "^ExecStart=$APP/bastion-server " "$HANDUNIT"; then
+		echo ""
+		echo "Hinweis: $HANDUNIT stammt aus einer Einrichtung von Hand und"
+		echo "startet nicht das Programm dieses Pakets. Zum Umstellen:"
+		echo "  Datenverzeichnis und Optionen in /etc/default/bastion-server eintragen,"
+		echo "  sudo rm $HANDUNIT && sudo systemctl daemon-reload && sudo systemctl restart bastion-server"
+	fi
+
+	if [ -z "$2" ]; then
+		PORT=$(echo "$BASTION_OPTS" | sed -n 's/.*-listen [^ ]*:\([0-9][0-9]*\).*/\1/p')
+		[ -n "$PORT" ] || PORT=8443
+		echo ""
+		echo "Bastion-Backup-Server installiert (Dienst bastion-server)."
+		echo "Weboberfläche: https://$(hostname -f 2>/dev/null || hostname):$PORT"
+		echo "(Der Browser warnt beim ersten Aufruf vor dem selbstsignierten Zertifikat.)"
+		# der Server schreibt die Datei bei seinem ersten Start
+		if [ -d /run/systemd/system ]; then
+			i=0
+			while [ $i -lt 20 ] && [ ! -f "$DATA/initial-admin-password.txt" ]; do
+				sleep 0.5
+				i=$((i + 1))
+			done
+		fi
+		echo ""
+		if [ -f "$DATA/initial-admin-password.txt" ]; then
+			echo "Erste Anmeldung:"
+			cat "$DATA/initial-admin-password.txt"
+			echo "Das Passwort bitte nach der Anmeldung ändern; die Datei wird dann gelöscht."
+		else
+			echo "Zugangsdaten nach dem ersten Start: $DATA/initial-admin-password.txt"
+		fi
+		echo ""
+		echo "Einstellungen (Port, Datenverzeichnis): /etc/default/bastion-server"
+		echo "Danach in der Weboberfläche unter Einstellungen die Server-Adresse eintragen."
+		echo "Wichtig: $DATA/keys sicher aufbewahren - ohne repo.key sind die Backups nicht lesbar."
+		echo ""
+	fi
+	;;
+esac
+
+exit 0

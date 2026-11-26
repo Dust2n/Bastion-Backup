@@ -3,6 +3,8 @@
 #   bastion-<Version>-windows-amd64.zip     Server + Agent ohne Installer
 #   bastion-<Version>-linux-amd64.zip       Server + Agent für Linux
 #   bastion-<Version>-linux-arm64.zip
+#   bastion-server_<Version>_amd64.deb      Debian/Ubuntu-Paket für den Server
+#   bastion-server_<Version>_arm64.deb
 #   SHA256SUMS.txt
 # Benötigt Go und Inno Setup 6 (https://jrsoftware.org/isdl.php).
 param(
@@ -46,6 +48,16 @@ foreach ($t in "windows-amd64", "linux-amd64", "linux-arm64") {
     Write-Host "Archiv $zip"
     Compress-Archive -Path "dist\$t\*", "README.md", "wiki.md" -DestinationPath $zip -Force
 }
+
+# Debian-Pakete: Zeitstempel der Dateien = letzter Commit (reproduzierbar)
+$env:SOURCE_DATE_EPOCH = "$(git log -1 --format=%ct 2>$null)".Trim()
+if (-not $env:SOURCE_DATE_EPOCH) { Remove-Item Env:SOURCE_DATE_EPOCH -ErrorAction SilentlyContinue }
+foreach ($arch in "amd64", "arm64") {
+    Write-Host "Debian-Paket $arch"
+    go run ./tools/mkdeb -version $Version -arch $arch -dist dist -out $out
+    if ($LASTEXITCODE -ne 0) { throw "Debian-Paket fehlgeschlagen" }
+}
+Remove-Item Env:SOURCE_DATE_EPOCH -ErrorAction SilentlyContinue
 
 $sums = Get-ChildItem $out -File | Sort-Object Name | ForEach-Object {
     "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name

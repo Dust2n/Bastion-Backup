@@ -1,0 +1,13 @@
+# Einstellungen des Bastion-Backup-Servers (Paket bastion-server).
+# Nach einer Änderung: sudo systemctl restart bastion-server
+
+# Datenverzeichnis: Datenbank, Schlüssel (keys/repo.key), TLS-Zertifikat,
+# Agent-Pakete und das Standard-Repository. Bei einem Wechsel den alten
+# Inhalt mitnehmen, sonst startet der Server leer.
+BASTION_DATA=/var/lib/bastion-server
+
+# Weitere Optionen, z. B.
+#   -listen :8443               HTTPS-Port für Weboberfläche und Agents
+#   -pxe                        PXE-Dienste (TFTP, proxyDHCP, HTTP :8080)
+#   -http 127.0.0.1:8080        zusätzlich HTTP hinter einem Reverse-Proxy
+BASTION_OPTS="-listen :8443"

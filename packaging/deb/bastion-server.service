@@ -1,0 +1,17 @@
+[Unit]
+Description=Bastion Backup Server
+Documentation=file:///opt/bastion-server/wiki.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=BASTION_DATA=/var/lib/bastion-server
+Environment="BASTION_OPTS=-listen :8443"
+EnvironmentFile=-/etc/default/bastion-server
+ExecStart=/opt/bastion-server/bastion-server -data ${BASTION_DATA} $BASTION_OPTS
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

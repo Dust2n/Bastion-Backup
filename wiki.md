@@ -111,6 +111,25 @@ Ergebnis in `dist\<os>-<arch>\`: `bastion-server(.exe)`, `bastion-agent(.exe)`, 
 sudo ./bastion-server -install-service -data /var/lib/bastion-server -listen :8443
 ```
 
+**Debian/Ubuntu: Paket** `bastion-server_<Version>_<amd64|arm64>.deb` aus dem Release (baut `release.ps1`, einzeln: `go run ./tools/mkdeb -version x.y.z -arch amd64`):
+```bash
+sudo apt install ./bastion-server_0.3.0_amd64.deb
+```
+
+| Pfad | Inhalt |
+|---|---|
+| `/opt/bastion-server/` | Server-Programm, Rettungsskripte, Dokumentation, Agent-Programme (Quelle) |
+| `/usr/bin/bastion-server` | Verweis auf das Programm |
+| `/etc/default/bastion-server` | `BASTION_DATA` (Datenverzeichnis) und `BASTION_OPTS` (`-listen :8443`, `-pxe`, `-http …`); bleibt bei Updates erhalten |
+| `/usr/lib/systemd/system/bastion-server.service` | Dienst `bastion-server`, startet automatisch |
+| `/var/lib/bastion-server/` | Datenverzeichnis (Standard), Rechte 700, root |
+
+- Bei der Installation werden die Agents nach `<data>/agents` kopiert, der Dienst gestartet und die Zugangsdaten für die erste Anmeldung angezeigt.
+- Nach einer Änderung in `/etc/default/bastion-server`: `sudo systemctl restart bastion-server`. Beim Wechsel des Datenverzeichnisses den alten Inhalt mitnehmen.
+- War der Server vorher mit `-install-service` eingerichtet, hat `/etc/systemd/system/bastion-server.service` Vorrang; die Installation weist darauf hin, wie man auf die Paket-Unit umstellt.
+- Für das Linux-Rettungssystem zusätzlich `debootstrap cpio zstd` (ISO: `grub-pc-bin grub-efi-amd64-bin xorriso mtools`) installieren.
+- `sudo apt remove bastion-server` beendet den Dienst; das Datenverzeichnis bleibt auch bei `purge` erhalten.
+
 Danach:
 1. Weboberfläche öffnen: `https://<server>:8443`. Benutzer `admin`, Passwort aus `initial-admin-password.txt`, danach ändern.
 2. **Einstellungen → Server-Adresse für Agents** eintragen (z. B. `https://backup01.firma.local:8443`).
@@ -446,7 +465,7 @@ Den Ablauf regelmäßig auf einer Test-VM durchspielen: `restore` in ein leeres 
 bastion-server [-data DIR] [-listen :8443] [-http 127.0.0.1:8080] [-pxe]
 bastion-server -install-service -data DIR [-listen :8443]
 bastion-server restore -from <Datei|Ordner> [-data DIR] [-force]
-bastion-server update -from <Release-Ordner> [-data DIR] [-exe PROGRAMM] [-no-restart]
+bastion-server update -from <Release-Ordner> [-data DIR] [-exe PROGRAMM] [-no-restart] [-force]
 bastion-server -version
 ```
 
@@ -517,6 +536,8 @@ Programm und Datenverzeichnis liest der Befehl aus dem eingerichteten Dienst. Da
 
 - baut der Server ein vorhandenes WinPE-Rettungssystem neu (Einstellung `auto_rescue_build`, Standard an),
 - aktualisiert er die Agents, wenn `auto_update_agents` auf 1 steht (Standard aus).
+
+**Server aus dem Debian-Paket:** einfach das neue Paket installieren (`sudo apt install ./bastion-server_x.y.z_amd64.deb`). Es stellt die neuen Agents bereit und startet den Dienst neu; `/etc/default/bastion-server` bleibt erhalten. `bastion-server update` lehnt eine Paket-Installation ab, weil dpkg sonst nichts von den geänderten Dateien weiß (`-force` überschreibt trotzdem).
 
 **Agents von Hand aktualisieren:** Rechner → „Alle aktualisieren“ (oder je Rechner im ⋯-Menü).
 
