@@ -13,6 +13,7 @@ func TestTornChunkIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer s.Close()
 	data := []byte("Inhalt eines Blocks")
 	id := Hash(data)
 	p := s.loosePath(id)

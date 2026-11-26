@@ -66,6 +66,8 @@ type Server struct {
 	wakeMu sync.Mutex
 	wake   map[string]chan struct{}
 
+	bgRunning sync.WaitGroup // tasks started with bg
+
 	gcMu      sync.Mutex
 	gcRunning bool
 
@@ -330,7 +332,9 @@ func httpErr(w http.ResponseWriter, code int, format string, args ...any) {
 // bg runs a background task. A panic in it is logged instead of ending
 // the whole server process (and with it every running backup).
 func (s *Server) bg(name string, f func()) {
+	s.bgRunning.Add(1)
 	go func() {
+		defer s.bgRunning.Done()
 		defer func() {
 			if v := recover(); v != nil {
 				s.log.Printf("interner Fehler in %s: %v\n%s", name, v, debug.Stack())
@@ -338,6 +342,22 @@ func (s *Server) bg(name string, f func()) {
 		}()
 		f()
 	}()
+}
+
+// waitBackground waits until the tasks started with bg have finished, at
+// most d. It reports whether they did.
+func (s *Server) waitBackground(d time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		s.bgRunning.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 // notifyAgent wakes up a long-polling agent.

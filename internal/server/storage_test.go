@@ -18,7 +18,15 @@ func testServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s.db.Close() })
+	t.Cleanup(func() {
+		// background tasks (index, checks) still write into the data
+		// directory, and Windows deletes no open files
+		if !s.waitBackground(30 * time.Second) {
+			t.Error("Hintergrundaufgaben laufen nach 30 s noch")
+		}
+		s.closeStores()
+		s.db.Close()
+	})
 	return s
 }
 

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -172,7 +173,12 @@ func readFile(p string) string {
 func TestApplyUpdate(t *testing.T) {
 	own := runtime.GOOS + "-" + runtime.GOARCH
 	rel, data, app := t.TempDir(), t.TempDir(), t.TempDir()
-	for _, p := range []string{own, "windows-amd64", "linux-arm64"} {
+	// the platforms of a release, plus this one if it is none of them
+	plats := []string{"windows-amd64", "linux-amd64", "linux-arm64"}
+	if !slices.Contains(plats, own) {
+		plats = append(plats, own)
+	}
+	for _, p := range plats {
 		writeFile(t, filepath.Join(rel, p, binName("bastion-agent", p)), "agent neu "+p)
 		writeFile(t, filepath.Join(rel, p, binName("bastion-server", p)), "server neu "+p)
 		writeFile(t, filepath.Join(rel, p, "VERSION"), "9.9.9\r\n")
@@ -188,7 +194,7 @@ func TestApplyUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err, log.String())
 	}
-	if !plan.Server || plan.Version != "9.9.9" || len(plan.Agents) != 3 {
+	if !plan.Server || plan.Version != "9.9.9" || len(plan.Agents) != len(plats) {
 		t.Errorf("Plan: %+v", plan)
 	}
 	if got := readFile(exe); got != "server neu "+own {
@@ -197,7 +203,7 @@ func TestApplyUpdate(t *testing.T) {
 	if got := readFile(exe + ".old"); got != "server alt" {
 		t.Errorf("altes Programm: %q", got)
 	}
-	for _, p := range []string{own, "windows-amd64", "linux-arm64"} {
+	for _, p := range plats {
 		if got := readFile(filepath.Join(data, "agents", p, binName("bastion-agent", p))); got != "agent neu "+p {
 			t.Errorf("Agent %s: %q", p, got)
 		}

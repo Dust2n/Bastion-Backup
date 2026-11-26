@@ -162,6 +162,24 @@ func (s *Server) flushStores() {
 	}
 }
 
+// closeStores closes all opened storages: open packs are finished and
+// their files released (Windows can not delete or move open files).
+// A storage used again afterwards is opened anew.
+func (s *Server) closeStores() {
+	s.storeMu.Lock()
+	list := make([]*repo.Store, 0, len(s.stores))
+	for _, st := range s.stores {
+		list = append(list, st)
+	}
+	s.stores = map[int64]*repo.Store{}
+	s.storeMu.Unlock()
+	for _, st := range list {
+		if err := st.Close(); err != nil {
+			s.log.Printf("Speicherort %s: %v", st.Dir(), err)
+		}
+	}
+}
+
 func (s *Server) setAgentStore(agentID string, storage int64) {
 	s.storeMu.Lock()
 	s.agentStore[agentID] = storage
@@ -356,8 +374,16 @@ func (s *Server) handleStorageDelete(w http.ResponseWriter, r *http.Request, u *
 	}
 	s.db.Exec(`DELETE FROM storages WHERE id=?`, id)
 	s.storeMu.Lock()
+	st := s.stores[id]
 	delete(s.stores, id)
 	s.storeMu.Unlock()
+	// release the open pack, otherwise Windows keeps the folder locked
+	// until the server restarts
+	if st != nil {
+		if err := st.Close(); err != nil {
+			s.log.Printf("Speicherort %s: %v", st.Dir(), err)
+		}
+	}
 	s.audit(u.Name, "storage_delete", row.Name+" (Dateien bleiben in "+row.Path+")")
 	writeJSON(w, map[string]string{"ok": "1"})
 }

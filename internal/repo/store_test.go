@@ -15,6 +15,7 @@ func testStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { s.Close() }) // Windows deletes no open files
 	return s
 }
 
@@ -64,8 +65,8 @@ func TestRoundTripAndDedup(t *testing.T) {
 func TestCopyTo(t *testing.T) {
 	key := make([]byte, 32)
 	rand.Read(key)
-	a, _ := Open(t.TempDir(), key)
-	b, _ := Open(t.TempDir(), key)
+	a := openStore(t, t.TempDir(), key)
+	b := openStore(t, t.TempDir(), key)
 	id, _ := a.Put([]byte("verschieben"))
 	if n, err := a.CopyTo(b, id); err != nil || n == 0 {
 		t.Fatal("copy failed", err)
@@ -78,7 +79,7 @@ func TestCopyTo(t *testing.T) {
 	}
 	other := make([]byte, 32)
 	rand.Read(other)
-	c, _ := Open(t.TempDir(), other)
+	c := openStore(t, t.TempDir(), other)
 	a.CopyTo(c, id)
 	if c.Verify(id) == nil {
 		t.Fatal("store with another key must not accept the chunk")

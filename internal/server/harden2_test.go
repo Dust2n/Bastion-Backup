@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -221,19 +222,38 @@ func TestPruneHistory(t *testing.T) {
 // A panic in a background task is logged; the process goes on.
 func TestBackgroundPanic(t *testing.T) {
 	s := testServer(t)
-	var buf bytes.Buffer
+	var buf lockedBuffer
 	s.log.SetOutput(&buf)
-	done := make(chan struct{})
 	s.bg("Test", func() {
-		defer close(done)
 		var m map[string]int
 		m["x"] = 1
 	})
-	<-done
-	time.Sleep(50 * time.Millisecond)
-	if !strings.Contains(buf.String(), "interner Fehler in Test") {
-		t.Errorf("Panic nicht protokolliert: %q", buf.String())
+	// the log line is written after f has returned, in the recover of bg
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(buf.String(), "interner Fehler in Test") {
+		if time.Now().After(deadline) {
+			t.Fatalf("Panic nicht protokolliert: %q", buf.String())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// lockedBuffer is a bytes.Buffer that may be written and read concurrently.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // The Linux install command pins the key of this server's certificate.

@@ -94,7 +94,7 @@ Beim Restore wird die Zielplatte neu partitioniert (auf die neue Größe skalier
 ## 3. Installation des Servers
 
 ### Bauen
-Benötigt Go ≥ 1.23.
+Benötigt Go ≥ 1.26.11 (Go ab 1.21 lädt diese Version bei Bedarf selbst nach).
 ```powershell
 .\build.ps1 -Version 0.3.0
 .\build.ps1 -Version 0.3.0 -Publish C:\BastionData   # zusätzlich Agents für Verteilung/Updates bereitstellen

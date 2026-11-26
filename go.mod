@@ -1,10 +1,10 @@
 module bastion
 
-go 1.26.0
+go 1.26.11
 
 require (
 	github.com/go-ldap/ldap/v3 v3.4.10
-	github.com/klauspost/compress v1.17.11
+	github.com/klauspost/compress v1.20.5
 	github.com/masterzen/winrm v0.0.0-20240702205601-3fad6e106085
 	github.com/pin/tftp/v3 v3.1.0
 	github.com/robfig/cron/v3 v3.0.1
@@ -14,7 +14,7 @@ require (
 )
 
 require (
-	github.com/Azure/go-ntlmssp v0.0.0-20221128193559-754e69321358 // indirect
+	github.com/Azure/go-ntlmssp v0.1.1 // indirect
 	github.com/ChrisTrenkamp/goxpath v0.0.0-20210404020558-97928f7e12b6 // indirect
 	github.com/bodgit/ntlmssp v0.0.0-20240506230425-31973bb52d9b // indirect
 	github.com/bodgit/windows v1.0.1 // indirect

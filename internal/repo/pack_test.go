@@ -18,6 +18,7 @@ func openStore(t *testing.T, dir string, key []byte) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { s.Close() }) // Windows deletes no open files
 	return s
 }
 
