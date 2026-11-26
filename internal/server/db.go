@@ -117,9 +117,13 @@ func jsonStr(v any) string {
 	return string(b)
 }
 
+// setting returns a stored setting, def if it is missing or empty. The
+// settings form saves every field, an empty one too; empty means "the
+// default" there (the placeholder shows it), not "off". Settings that can
+// be switched off use 0 or have an empty default.
 func (s *Server) setting(key, def string) string {
 	var v string
-	if err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v); err != nil {
+	if err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v); err != nil || v == "" {
 		return def
 	}
 	return v

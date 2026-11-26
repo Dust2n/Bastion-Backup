@@ -72,7 +72,7 @@ func (s *Server) monitorStatus() monitorStatus {
 			if a.LastBackup > 0 {
 				a.BackupAge = st.Time - a.LastBackup
 			}
-			a.Stale = a.LastBackup == 0 || a.BackupAge > stale
+			a.Stale = a.LastBackup == 0 || stale > 0 && a.BackupAge > stale
 			switch {
 			case a.LastBackup == 0:
 				st.Problems = append(st.Problems, a.Hostname+": kein Backup vorhanden")

@@ -554,7 +554,11 @@ Programm und Datenverzeichnis liest der Befehl aus dem eingerichteten Dienst. Da
 | Symptom | Ursache / Lösung |
 |---|---|
 | Verteilung: „kein Zugriff auf ADMIN$“ | Remote-UAC, siehe [Kapitel 4](#4-agents-verteilen) |
-| Verteilung: „erreicht 172.16.50.10:8443 nicht“ | Firewall auf dem Server (eingehend TCP 8443) oder im Netz |
+| Verteilung: „erreicht 172.16.50.10:8443 nicht“ | Firewall auf dem Server (eingehend TCP 8443; Ubuntu: `sudo ufw allow 8443/tcp`) oder im Netz |
+| Verteilung: „kann den Namen … nicht auflösen“ | Server-Adresse fehlt oder ist ein Name ohne DNS-Eintrag: unter Einstellungen „Server-Adresse für Agents“ mit IP-Adresse oder DNS-Namen eintragen |
+| Backup bleibt auf „geplant“ | Der Auftrag nennt den Grund: Rechner offline, Grenze „Gleichzeitige Backups“ erreicht, Bereinigung oder Verschieben läuft. Steht nichts da, holt der Agent nicht ab: `agent.log` lesen |
+| Backup startet eine bzw. zwei Stunden zu spät | Server steht auf UTC; Zeitpläne laufen in Serverzeit. Linux: `sudo timedatectl set-timezone Europe/Berlin`, dann Dienst neu starten |
+| Einstellungen lassen sich nicht speichern | Die Meldung nennt das Feld. Leer = Standardwert; Uhrzeiten als HH:MM, Server-Adresse vollständig mit `https://` und Port |
 | Verteilung bleibt auf „wartet“ | Rechner aus/nicht erreichbar; läuft automatisch weiter, „Jetzt versuchen“ für sofort |
 | Backup-Warnung „VSS-Writer nicht nutzbar“ | `vssadmin list writers` prüfen (Writer in Fehlerzustand → Dienst neu starten); Schattenkopie-Speicher prüfen (`vssadmin list shadowstorage`) |
 | „es läuft bereits ein anderer Snapshot“ | anderes Backup-Programm gleichzeitig; Zeitplan verschieben |

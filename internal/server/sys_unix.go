@@ -26,3 +26,13 @@ func listDrives() []dirEntry {
 	free, total := diskFree("/")
 	return []dirEntry{{Name: "/", Path: "/", Free: free, Total: total}}
 }
+
+// sameDisk reports whether both paths lie on the same file system. Unknown
+// (a path is missing) counts as not the same.
+func sameDisk(a, b string) bool {
+	var sa, sb unix.Stat_t
+	if unix.Stat(a, &sa) != nil || unix.Stat(b, &sb) != nil {
+		return false
+	}
+	return sa.Dev == sb.Dev
+}

@@ -269,8 +269,8 @@ func (s *Server) failStalledJobs() {
 // crossed reports whether the local time hh:mm lies in (a, b] on the day
 // of b or, after a longer pause, on one of the days before.
 func crossed(a, b time.Time, hhmm string) bool {
-	var h, m int
-	if _, err := fmt.Sscanf(hhmm, "%d:%d", &h, &m); err != nil {
+	h, m, err := parseClock(hhmm)
+	if err != nil {
 		return false
 	}
 	for d := 0; d <= int(maxCatchUp/(24*time.Hour)); d++ {

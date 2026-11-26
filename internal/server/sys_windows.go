@@ -4,6 +4,7 @@ package server
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"unsafe"
 
@@ -86,4 +87,18 @@ func listDrives() []dirEntry {
 		out = append(out, dirEntry{Name: root, Path: root, Free: free, Total: total, Label: windows.UTF16ToString(label[:])})
 	}
 	return out
+}
+
+// sameDisk reports whether both paths lie on the same drive. Network
+// paths (\\server\share) never match a drive letter.
+func sameDisk(a, b string) bool {
+	va, vb := filepath.VolumeName(absPath(a)), filepath.VolumeName(absPath(b))
+	return va != "" && strings.EqualFold(va, vb)
+}
+
+func absPath(p string) string {
+	if a, err := filepath.Abs(p); err == nil {
+		return a
+	}
+	return p
 }

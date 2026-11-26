@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -169,11 +170,20 @@ func (s *Server) checkWinRM(ctx context.Context, target string, c *cred, add fun
 		return
 	}
 	host, port := s.serverHostPort()
+	// name resolution first: an unknown name and a blocked port need
+	// different fixes (server address vs. firewall)
 	script := fmt.Sprintf(`$p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 "admin=" + $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-try { $t = New-Object Net.Sockets.TcpClient; $a = $t.BeginConnect('%s', %s, $null, $null)
-  if ($a.AsyncWaitHandle.WaitOne(5000) -and $t.Connected) { "server=ok" } else { "server=Zeitüberschreitung" }; $t.Close()
-} catch { "server=" + $_.Exception.InnerException.Message }`, host, port)
+$h = '%s'
+$dns = $true
+try { [void][Net.Dns]::GetHostAddresses($h) } catch { $dns = $false; "server=dns" }
+if ($dns) {
+  try { $t = New-Object Net.Sockets.TcpClient; $a = $t.BeginConnect($h, %s, $null, $null)
+    if (-not $a.AsyncWaitHandle.WaitOne(5000)) { "server=timeout" }
+    else { try { $t.EndConnect($a); "server=ok" } catch { "server=" + $_.Exception.InnerException.Message } }
+    $t.Close()
+  } catch { "server=" + $_.Exception.InnerException.Message }
+}`, host, port)
 	stdout, stderr, _, err := cl.RunPSWithContext(ctx, script)
 	if err != nil {
 		msg := err.Error()
@@ -198,7 +208,7 @@ try { $t = New-Object Net.Sockets.TcpClient; $a = $t.BeginConnect('%s', %s, $nul
 	if vals["server"] == "ok" {
 		add("Verbindung Rechner → Server", nil, host+":"+port+" erreichbar")
 	} else {
-		add("Verbindung Rechner → Server", fmt.Errorf("%s erreicht %s:%s nicht (%s) – Firewall auf dem Server bzw. im Netz prüfen", target, host, port, vals["server"]), "")
+		add("Verbindung Rechner → Server", s.reachError(target, host, port, vals["server"]), "")
 	}
 }
 
@@ -223,7 +233,12 @@ func (s *Server) checkSSH(target string, c *cred, add func(string, error, string
 		add("Root-Rechte", nil, "über "+map[bool]string{true: "root", false: "sudo"}[c.User == "root"])
 	}
 	host, port := s.serverHostPort()
-	test := fmt.Sprintf(`if command -v curl >/dev/null 2>&1; then curl -sk -o /dev/null --max-time 5 https://%[1]s:%[2]s/ && echo ok || echo fail;
+	dns := ""
+	if net.ParseIP(host) == nil {
+		// getent answers for names; for IP addresses it would need a PTR record
+		dns = fmt.Sprintf("if command -v getent >/dev/null 2>&1 && ! getent hosts %s >/dev/null 2>&1; then echo dns; el", shellQuote(host))
+	}
+	test := dns + fmt.Sprintf(`if command -v curl >/dev/null 2>&1; then curl -sk -o /dev/null --max-time 5 https://%[1]s:%[2]s/ && echo ok || echo fail;
 elif command -v bash >/dev/null 2>&1; then timeout 5 bash -c 'exec 3<>/dev/tcp/%[1]s/%[2]s' && echo ok || echo fail; else echo unknown; fi`, host, port)
 	out, _ := sc.run(test, nil)
 	switch lastLine(out) {
@@ -231,8 +246,10 @@ elif command -v bash >/dev/null 2>&1; then timeout 5 bash -c 'exec 3<>/dev/tcp/%
 		add("Verbindung Rechner → Server", nil, host+":"+port+" erreichbar")
 	case "unknown":
 		add("Verbindung Rechner → Server", nil, "nicht prüfbar (weder curl noch bash vorhanden)")
+	case "dns":
+		add("Verbindung Rechner → Server", s.reachError(target, host, port, "dns"), "")
 	default:
-		add("Verbindung Rechner → Server", fmt.Errorf("%s erreicht %s:%s nicht – Firewall auf dem Server bzw. im Netz prüfen", target, host, port), "")
+		add("Verbindung Rechner → Server", s.reachError(target, host, port, "timeout"), "")
 	}
 }
 
@@ -242,4 +259,23 @@ func lastLine(s string) string {
 		return strings.TrimSpace(s[i+1:])
 	}
 	return s
+}
+
+// reachError explains why a machine does not reach the server and what to
+// change: the server address (unknown name) or the firewall.
+func (s *Server) reachError(target, host, port, result string) error {
+	if result == "dns" {
+		if s.setting("public_url", "") == "" {
+			return fmt.Errorf("%s kann den Namen %s nicht auflösen. Unter Einstellungen die „Server-Adresse für Agents“ eintragen, mit IP-Adresse oder DNS-Namen (z. B. https://192.168.1.10:%s); bisher wird der Rechnername des Servers verwendet", target, host, port)
+		}
+		return fmt.Errorf("%s kann den Namen %s nicht auflösen – DNS-Eintrag anlegen oder unter Einstellungen die Server-Adresse mit IP-Adresse eintragen", target, host)
+	}
+	fw := "Firewall auf dem Server"
+	if runtime.GOOS == "linux" {
+		fw = "Firewall auf dem Server (z. B. sudo ufw allow " + port + "/tcp)"
+	}
+	if result == "" || result == "timeout" {
+		result = "Zeitüberschreitung"
+	}
+	return fmt.Errorf("%s erreicht %s:%s nicht (%s) – %s bzw. im Netz prüfen", target, host, port, result, fw)
 }

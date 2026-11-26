@@ -51,6 +51,8 @@ export async function pageDashboard() {
       kpi('play', 'Aktive Aufträge', d.running, d.queued ? `${d.queued} geplant` : 'keine geplant'),
       kpi('db', 'Speicher belegt', d.repo && d.repo.bytes ? bytes(d.repo.bytes) : '–', ratio ? `Deduplizierung ${ratio.toFixed(1).replace('.', ',')} : 1 · ${d.snapshots} Backups` : `${d.snapshots} Backups`)),
     d.scrub && d.scrub.bad > 0 ? h('div', { class: 'callout bad' }, icon('alert'), `Integritätsprüfung: ${d.scrub.message}`) : null,
+    // setup mistakes that do not fail loudly (server address, storage on the server disk, no server backup)
+    ...(d.warnings || []).map((w) => h('div', { class: 'callout warn' }, icon('alert'), h('span', {}, w))),
     h('div', { class: 'grid two-one' },
       card('Backups der letzten 14 Tage', barChart(days, [{ key: 'ok', cls: 'ok', label: 'erfolgreich' }, { key: 'failed', cls: 'bad', label: 'fehlgeschlagen' }])),
       card(h('div', { class: 'row-between' }, h('h2', {}, 'Speicherorte'), h('a', { href: '#/storages', class: 'small' }, 'verwalten')),
@@ -63,7 +65,7 @@ export async function pageDashboard() {
         ['Rechner', (r) => h('a', { href: '#/agents/' + r.id }, r.hostname)],
         ['Letztes Backup', (r) => r.last_backup ? ago(r.last_backup) : badge('failed', 'noch nie')],
         ['Online', (r) => ago(r.last_seen)],
-      ], d.problems) : h('div', { class: 'empty' }, icon('check'), ` Alle Rechner wurden in den letzten ${d.stale_days} Tagen gesichert.`))),
+      ], d.problems) : h('div', { class: 'empty' }, icon('check'), d.stale_days > 0 ? ` Alle Rechner wurden in den letzten ${d.stale_days} Tagen gesichert.` : ' Alle Rechner haben ein Backup.'))),
     card('Letzte Aufträge', jobTable(d.recent, { compact: false, live: true })));
 }
 

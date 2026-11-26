@@ -159,9 +159,15 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, u *user
 	json.Unmarshal([]byte(s.setting("scrub_result", "null")), &scrub)
 	d["scrub"] = scrub
 
+	// machines without a recent backup; with notify_stale_days = 0 (off)
+	// only those that never had one
 	stale := s.settingInt("notify_stale_days", 3)
+	cutoff := int64(1)
+	if stale > 0 {
+		cutoff = now() - int64(stale)*86400
+	}
 	rows, _ := s.db.Query(`SELECT a.id,a.hostname,a.last_seen,COALESCE(MAX(sn.time),0) FROM agents a
-		LEFT JOIN snapshots sn ON sn.agent_id=a.id AND sn.deleted=0 WHERE a.removed=0 GROUP BY a.id HAVING COALESCE(MAX(sn.time),0) < ? ORDER BY a.hostname`, now()-int64(stale)*86400)
+		LEFT JOIN snapshots sn ON sn.agent_id=a.id AND sn.deleted=0 WHERE a.removed=0 GROUP BY a.id HAVING COALESCE(MAX(sn.time),0) < ? ORDER BY a.hostname`, cutoff)
 	var problems []map[string]any
 	for rows.Next() {
 		var id, host string
@@ -172,6 +178,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request, u *user
 	rows.Close()
 	d["problems"] = problems
 	d["stale_days"] = stale
+	d["warnings"] = s.setupWarnings()
 	d["recent"] = s.queryJobs(`WHERE 1=1`, nil, 12)
 	writeJSON(w, d)
 }
@@ -483,6 +490,10 @@ func (s *Server) handlePlanSave(w http.ResponseWriter, r *http.Request, u *user)
 	}
 	if p.Kind == "files" && len(p.Paths) == 0 {
 		httpErr(w, 400, "Für Datei-Backups mindestens einen Pfad angeben")
+		return
+	}
+	if p.KeepLast < 0 || p.KeepDaily < 0 || p.KeepWeekly < 0 || p.KeepMonthly < 0 || p.BandwidthKBps < 0 {
+		httpErr(w, 400, "Aufbewahrung und Bandbreite dürfen nicht negativ sein (0 = alle behalten bzw. unbegrenzt)")
 		return
 	}
 	if p.Schedule != "" {
@@ -1042,6 +1053,19 @@ func (s *Server) handleSettingsSave(w http.ResponseWriter, r *http.Request, u *u
 	var req map[string]string
 	if err := readJSON(r, &req); err != nil {
 		httpErr(w, 400, "ungültige Anfrage")
+		return
+	}
+	// check everything first: a refused form changes nothing
+	var bad []string
+	for _, k := range settingKeys {
+		if v, ok := req[k]; ok {
+			if err := validSetting(k, strings.TrimSpace(v)); err != nil {
+				bad = append(bad, err.Error())
+			}
+		}
+	}
+	if len(bad) > 0 {
+		httpErr(w, 400, "%s", strings.Join(bad, "; "))
 		return
 	}
 	for _, k := range settingKeys {

@@ -104,8 +104,15 @@ func (s *Server) enqueue(agentID string, planID int64, typ string, params any, b
 			return 0, fmt.Errorf("für diesen Plan ist bereits ein Backup geplant oder aktiv")
 		}
 	}
-	res, err := s.db.Exec(`INSERT INTO jobs(agent_id,plan_id,type,params,status,created,created_by) VALUES(?,?,?,?,?,?,?)`,
-		agentID, planID, typ, jsonStr(params), "queued", now(), by)
+	// say why nothing happens yet; dispatch replaces it
+	msg := ""
+	var seen int64
+	s.db.QueryRow(`SELECT last_seen FROM agents WHERE id=?`, agentID).Scan(&seen)
+	if now()-seen >= 120 {
+		msg = "wartet, bis der Rechner online ist"
+	}
+	res, err := s.db.Exec(`INSERT INTO jobs(agent_id,plan_id,type,params,status,created,created_by,message) VALUES(?,?,?,?,?,?,?,?)`,
+		agentID, planID, typ, jsonStr(params), "queued", now(), by, msg)
 	if err != nil {
 		return 0, err
 	}
@@ -143,6 +150,18 @@ func (s *Server) wakeOnLAN(agentID string) {
 	}
 }
 
+// jobWaiting notes why a queued job is held back. dispatch runs every few
+// seconds per agent; only a change is written and shown.
+func (s *Server) jobWaiting(id int64, why string) {
+	res, err := s.db.Exec(`UPDATE jobs SET message=? WHERE id=? AND status='queued' AND COALESCE(message,'')<>?`, why, id, why)
+	if err != nil {
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		s.publishJob(id)
+	}
+}
+
 // dispatch hands the next queued job to an agent.
 func (s *Server) dispatch(agentID string) (*proto.Job, error) {
 	rows, err := s.db.Query(`SELECT id,type,plan_id,params FROM jobs WHERE agent_id=? AND status='queued' ORDER BY id`, agentID)
@@ -174,17 +193,28 @@ func (s *Server) dispatch(agentID string) (*proto.Job, error) {
 			s.storeMu.Unlock()
 			var running int
 			s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE type='backup' AND status='running'`).Scan(&running)
-			if gc || moving || running >= s.settingInt("max_parallel_backups", 10) {
+			if limit := s.maxParallelBackups(); gc || moving || running >= limit {
+				// held back: tell the administrator why
+				why := "wartet, bis die Bereinigung fertig ist"
+				switch {
+				case moving:
+					why = "wartet, bis die Backups dieses Plans verschoben sind"
+				case !gc:
+					why = fmt.Sprintf("wartet: bereits %d Backups gleichzeitig (Einstellung „Gleichzeitige Backups“: %d)", running, limit)
+				}
+				s.jobWaiting(c.id, why)
 				continue
 			}
 			storage = s.planStorage(c.planID)
 			if _, err := s.storeByID(storage); err != nil {
 				s.db.Exec(`UPDATE jobs SET status='failed',message=?,finished=? WHERE id=?`, "Speicherort nicht verfügbar: "+err.Error(), now(), c.id)
+				s.publishJob(c.id)
 				continue
 			}
 			bp, err := s.backupParams(c.planID, c.params, agentID)
 			if err != nil {
 				s.db.Exec(`UPDATE jobs SET status='failed',message=?,finished=? WHERE id=?`, err.Error(), now(), c.id)
+				s.publishJob(c.id)
 				continue
 			}
 			params = jsonStr(bp)
@@ -194,7 +224,7 @@ func (s *Server) dispatch(agentID string) (*proto.Job, error) {
 			json.Unmarshal([]byte(c.params), &rp)
 			storage = s.snapStorage(rp.SnapshotID)
 		}
-		res, err := s.db.Exec(`UPDATE jobs SET status='running',started=?,updated=?,params=? WHERE id=? AND status='queued'`, now(), now(), params, c.id)
+		res, err := s.db.Exec(`UPDATE jobs SET status='running',started=?,updated=?,params=?,message='' WHERE id=? AND status='queued'`, now(), now(), params, c.id)
 		if err != nil {
 			return nil, err
 		}

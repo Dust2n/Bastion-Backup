@@ -86,6 +86,16 @@ configure)
 		else
 			echo "Zugangsdaten nach dem ersten Start: $DATA/initial-admin-password.txt"
 		fi
+		if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+			echo ""
+			echo "Die Firewall (ufw) ist aktiv. Damit Browser und Agents den Server erreichen:"
+			echo "  sudo ufw allow $PORT/tcp"
+		fi
+		if [ "$(date +%Z)" = "UTC" ]; then
+			echo ""
+			echo "Die Zeitzone des Servers ist UTC; Zeitpläne laufen in Serverzeit. Für Deutschland:"
+			echo "  sudo timedatectl set-timezone Europe/Berlin && sudo systemctl restart bastion-server"
+		fi
 		echo ""
 		echo "Einstellungen (Port, Datenverzeichnis): /etc/default/bastion-server"
 		echo "Danach in der Weboberfläche unter Einstellungen die Server-Adresse eintragen."

@@ -204,7 +204,9 @@ export async function pageJob(id) {
           j.speed ? h('div', {}, h('div', { class: 'kpi-l' }, 'Tempo'), bytes(j.speed) + '/s') : null,
           j.eta ? h('div', {}, h('div', { class: 'kpi-l' }, 'Restzeit'), dur(j.eta)) : null,
           j.snapshot_id ? h('div', {}, h('div', { class: 'kpi-l' }, 'Backup'), h('a', { href: '#/snapshots/' + j.snapshot_id }, 'öffnen')) : null),
-        active ? h('div', { class: 'big-progress' }, progress(j.percent), h('div', { class: 'row-between small muted' }, h('span', {}, j.message), h('b', {}, Math.round(j.percent) + ' %'))) : h('p', { class: 'msg' }, j.message),
+        // a queued job says why it has not started (machine offline, limit, cleanup)
+        j.status === 'queued' && j.message ? h('div', { class: 'callout warn' }, icon('alert'), h('span', {}, j.message)) : null,
+        active ? h('div', { class: 'big-progress' }, progress(j.percent), h('div', { class: 'row-between small muted' }, h('span', {}, j.status === 'queued' ? '' : j.message), h('b', {}, Math.round(j.percent) + ' %'))) : h('p', { class: 'msg' }, j.message),
         j.type === 'restore_image' && j.status === 'waiting' && (j.message || '').includes('Code') ? h('div', { class: 'callout' }, icon('life'), 'Rechner vom Rettungsmedium starten und den Code eingeben – oder im Rettungssystem anmelden und das Backup auswählen.') : null));
     logBox.textContent = j.log || 'Noch keine Einträge';
   };
